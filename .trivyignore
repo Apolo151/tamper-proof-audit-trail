@@ -1,0 +1,8 @@
+# Accepted-risk CVE allowlist for Trivy (fs + image scans).
+#
+# Format: one identifier per line, optional `exp:YYYY-MM-DD` expiry.
+#   CVE-2024-XXXXX exp:2026-12-31
+#
+# Keep this file empty unless a finding has been explicitly triaged and
+# accepted, with a linked ticket in the commit message. `ignore-unfixed: true`
+# in the pipeline already suppresses vulnerabilities with no available fix.
