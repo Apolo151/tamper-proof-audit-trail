@@ -30,3 +30,23 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# --- project-specific ---
+# Compiled binary
+/bin/
+# Local + demo audit data directories
+/data/
+/demo-data/
+# Generated SBOM
+sbom.*
+# Terraform local state / plugins (the .terraform.lock.hcl IS committed - it
+# pins provider versions + hashes for reproducible scans)
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/crash.log
+# Interview prep notes - personal, not part of the project
+INTERVIEW_NOTES.md
+# Local Claude Code state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
