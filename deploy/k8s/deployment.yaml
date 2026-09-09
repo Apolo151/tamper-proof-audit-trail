@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auditd
+  namespace: audit
+  labels:
+    app: auditd
+    app.kubernetes.io/name: auditd
+    app.kubernetes.io/part-of: tamper-proof-audit-trail
+  annotations:
+    # These two are intentionally relaxed for the local `kind` workflow, which
+    # loads a locally-built image by tag. The CI kustomize overlay pins the
+    # image by digest and sets imagePullPolicy: Always, satisfying both checks.
+    checkov.io/skip1: CKV_K8S_43=local kind loads the image by tag; CI overlay pins by sha256 digest
+    checkov.io/skip2: CKV_K8S_15=IfNotPresent is required for `kind load docker-image`; CI sets Always
+spec:
+  # Single writer: the hash chain is per-pod state on an emptyDir. Two replicas
+  # would fork the chain. Production path: StatefulSet + RWO PVC (or move the
+  # chain into a shared WORM datastore) - documented in README.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: auditd
+  template:
+    metadata:
+      labels:
+        app: auditd
+        app.kubernetes.io/name: auditd
+    spec:
+      serviceAccountName: auditd
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: auditd
+          image: auditd:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: PORT
+              value: "8080"
+            - name: LOG_LEVEL
+              value: info
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
