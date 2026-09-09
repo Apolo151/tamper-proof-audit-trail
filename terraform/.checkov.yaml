@@ -1,0 +1,16 @@
+# Checkov configuration for the audit-trail Terraform module.
+#
+# The module currently passes Checkov with ZERO skips. The entries below are
+# kept as documented, pre-approved risk acceptances in case a future Checkov
+# version (or added resources) starts flagging them - each has a rationale so a
+# reviewer knows it was a deliberate decision, not an oversight.
+
+skip-check:
+  # Cross-Region Replication of the audit bucket. Out of scope for a
+  # single-region demo and roughly doubles storage cost. Production: replicate
+  # to an Object-Lock bucket in a second region for DR.
+  - CKV_AWS_144
+
+  # S3 event notifications on the audit bucket. No downstream consumer exists in
+  # this project. Add SNS/SQS/EventBridge wiring when one does.
+  - CKV2_AWS_62
