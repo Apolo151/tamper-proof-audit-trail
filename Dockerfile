@@ -3,7 +3,7 @@
 # ---- build stage -----------------------------------------------------------
 # Pinned major.minor; CI always resolves the latest patch so Go stdlib CVEs
 # stay fixed.
-FROM golang:1.26-bookworm AS build
+FROM golang:1.27-bookworm AS build
 
 WORKDIR /src
 
