@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # Keep pipeline actions current (and, once SHA-pinned, security-patched).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Go module updates (transitive CVE fixes land here).
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  # Base image digest updates for the Dockerfile.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
