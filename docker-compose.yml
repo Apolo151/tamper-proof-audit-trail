@@ -1,0 +1,31 @@
+# Local one-command run:  docker compose up --build
+# Mirrors the hardening applied in deploy/k8s/deployment.yaml.
+services:
+  auditd:
+    build: .
+    image: auditd:local
+    ports:
+      - "8080:8080"
+    environment:
+      DATA_DIR: /data
+      PORT: "8080"
+      LOG_LEVEL: info
+    volumes:
+      - audit-data:/data
+    read_only: true          # root filesystem is immutable
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "/auditd", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  audit-data:
