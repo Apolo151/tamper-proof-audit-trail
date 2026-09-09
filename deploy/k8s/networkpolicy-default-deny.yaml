@@ -1,0 +1,12 @@
+# Baseline: every pod in the namespace denies all ingress and egress. The
+# allow policy below re-opens exactly what auditd needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: audit
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
