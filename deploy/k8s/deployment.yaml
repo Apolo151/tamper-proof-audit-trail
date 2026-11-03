@@ -9,10 +9,11 @@ metadata:
     app.kubernetes.io/part-of: tamper-proof-audit-trail
   annotations:
     # These two are intentionally relaxed for the local `kind` workflow, which
-    # loads a locally-built image by tag. The CI kustomize overlay pins the
-    # image by digest and sets imagePullPolicy: Always, satisfying both checks.
-    checkov.io/skip1: CKV_K8S_43=local kind loads the image by tag; CI overlay pins by sha256 digest
-    checkov.io/skip2: CKV_K8S_15=IfNotPresent is required for `kind load docker-image`; CI sets Always
+    # loads a locally-built image by tag. The image CI publishes is signed and
+    # addressed by digest (ghcr.io/apolo151/auditd@sha256:...); deploying that
+    # one means setting the digest + imagePullPolicy: Always (see kustomization.yaml).
+    checkov.io/skip1: CKV_K8S_43=local kind loads the image by tag; the published GHCR image is deployed by sha256 digest
+    checkov.io/skip2: CKV_K8S_15=IfNotPresent is required for `kind load docker-image`; registry deploys use Always
 spec:
   # Single writer: the hash chain is per-pod state on an emptyDir. Two replicas
   # would fork the chain. Production path: StatefulSet + RWO PVC (or move the

@@ -15,5 +15,6 @@ images:
   - name: auditd
     newName: auditd
     newTag: local
-    # CI overrides this with a digest:
+    # Local kind uses the tag above. To deploy the signed image CI publishes,
+    # pin it by digest (verify it first with `make verify-image`):
     #   kustomize edit set image auditd=ghcr.io/apolo151/auditd@sha256:<digest>

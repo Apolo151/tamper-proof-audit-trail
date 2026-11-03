@@ -118,6 +118,8 @@ make tamper-demo
 ### Container layer
 - Multi-stage build → `gcr.io/distroless/static:nonroot`: no shell, no package
   manager, ~9 MB. Static binary, symbols stripped, `-trimpath`.
+- Both base images pinned by digest; the published image is signed and attested
+  (see *Supply chain* below).
 - Runs as UID 65532. `docker-compose.yml` adds `read_only`, `cap_drop: [ALL]`,
   `no-new-privileges`.
 
@@ -149,8 +151,42 @@ before anything is built - "shift-left":
 | 4 | sca | **govulncheck**, **trivy fs** | dependency / SCA scanning |
 | 5 | iac | **checkov** (tf + k8s), **hadolint** | IaC scanning |
 | 6 | image | **trivy image**, **syft** | container CVE scan + SBOM |
+| 7 | publish *(main only)* | **GHCR**, **cosign**, **syft**, `attest-build-provenance` | push the scanned image, keyless-sign it, attach SBOM + SLSA provenance attestations |
+| 8 | verify-signature *(main only)* | **cosign verify**, `gh attestation verify` | fail the run unless signature, SBOM and provenance verify against this workflow's exact identity |
 
 Workflow-level `permissions: contents: read`; `concurrency` cancels superseded runs.
+Only `publish` gets write scopes (`packages`, `id-token`, `attestations`), and
+only on `main`: pull requests never receive a signing identity.
+
+### Supply chain: signed images, SBOM and provenance
+
+Scanning says the image *had no known CVEs when built*. Signing and provenance
+say *this is the image our pipeline built, from this commit*.
+
+- **Pinned inputs.** Every action is pinned to a full commit SHA and both base
+  images to a `sha256` digest; Dependabot bumps them. Tags are mutable.
+- **Build once.** `publish` pushes the exact tarball `image` scanned, and checks
+  its image ID matches before pushing - it never rebuilds.
+- **Keyless signing.** `cosign sign` exchanges the job's GitHub OIDC token for a
+  short-lived Fulcio certificate bound to the workflow identity; the signature
+  is recorded in the public Rekor transparency log. No long-lived keys exist.
+- **Attestations, bound to the digest.** An SPDX SBOM (`cosign attest`) and SLSA
+  build provenance (`actions/attest-build-provenance`) are signed in-toto
+  statements whose subject is the image digest, stored next to it in GHCR.
+- **Verify gate.** `verify-signature` checks all three against the exact signer
+  identity, then runs a negative control: a foreign identity must be rejected.
+
+Verify it yourself (needs `cosign` and `gh`):
+
+```bash
+make verify-image IMAGE_REF=ghcr.io/apolo151/auditd@sha256:<digest>
+
+# or by hand - the identity flags are what make the check meaningful
+cosign verify ghcr.io/apolo151/auditd@sha256:<digest> \
+  --certificate-identity https://github.com/Apolo151/tamper-proof-audit-trail/.github/workflows/devsecops.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify oci://ghcr.io/apolo151/auditd@sha256:<digest> --repo Apolo151/tamper-proof-audit-trail
+```
 
 ---
 
