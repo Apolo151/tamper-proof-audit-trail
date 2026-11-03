@@ -75,3 +75,35 @@ func TestHealthcheck(t *testing.T) {
 		t.Fatalf("healthcheck(down) = %d, want 1", code)
 	}
 }
+
+func TestProbeURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/readyz":
+			w.WriteHeader(http.StatusOK)
+		case "/unready":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name string
+		url  string
+		want int
+	}{
+		{"ready", srv.URL + "/readyz", 0},
+		{"non-200", srv.URL + "/unready", 1},
+		{"unreachable", "http://127.0.0.1:1/readyz", 1},
+		{"not http", "ftp://example.invalid/", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := probe(tt.url); got != tt.want {
+				t.Fatalf("probe(%q) = %d, want %d", tt.url, got, tt.want)
+			}
+		})
+	}
+}
