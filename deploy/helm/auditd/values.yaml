@@ -1,0 +1,44 @@
+# Values for the auditd chart. values.schema.json validates every key -
+# unknown keys are rejected, so a typo (or an attempt to set securityContext,
+# which is deliberately not configurable) fails at install time.
+
+# Must stay 1: the hash chain is a single-writer log on an emptyDir. Two pods
+# would fork the chain. The schema enforces this.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/apolo151/auditd
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # sha256:<64 hex>. When set, the image is referenced as repository@digest
+  # (immutable). CI fills this in for the published chart, so a chart pulled
+  # from GHCR always runs the exact image it was released with.
+  digest: ""
+  # Empty = Always when a digest is set, IfNotPresent otherwise (local kind).
+  pullPolicy: ""
+
+logLevel: info
+
+service:
+  type: ClusterIP
+  port: 80
+  # Only used when type is NodePort; empty lets Kubernetes pick.
+  nodePort: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+networkPolicy:
+  # Default-deny for the whole namespace plus a single allow for auditd.
+  enabled: true
+  # Peers allowed to reach auditd on 8080, as NetworkPolicy `from` entries.
+  # Empty = pods in the release namespace only.
+  ingressFrom: []
+  #  - namespaceSelector:
+  #      matchLabels:
+  #        kubernetes.io/metadata.name: ingress-nginx

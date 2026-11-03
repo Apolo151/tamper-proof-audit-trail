@@ -1,0 +1,8 @@
+# Used by `ct install` in CI and `make k8s-deploy` locally: the image is built
+# on the machine and loaded into kind (`kind load docker-image auditd:local`),
+# so there is no registry and no digest.
+image:
+  repository: auditd
+  tag: local
+  pullPolicy: IfNotPresent
+logLevel: debug

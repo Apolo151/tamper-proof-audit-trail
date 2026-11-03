@@ -6,6 +6,9 @@ BIN        := bin/auditd
 IMAGE      := auditd:local
 DEMO_DIR   := demo-data
 KIND_NAME  := audit
+CHART      := deploy/helm/auditd
+NAMESPACE  := audit
+RENDERED   := bin/rendered-chart.yaml
 
 GOFLAGS_BUILD := -trimpath -ldflags="-w -s"
 
@@ -78,9 +81,9 @@ scan-deps: ## SCA / dependency scanning (govulncheck + trivy fs)
 	trivy fs --scanners vuln,secret,misconfig --ignore-unfixed --severity CRITICAL,HIGH .
 
 .PHONY: scan-iac
-scan-iac: ## IaC scanning (checkov on terraform + k8s, hadolint on Dockerfile)
+scan-iac: helm-template ## IaC scanning (checkov on terraform + rendered chart, hadolint on Dockerfile)
 	checkov -d terraform/ --config-file terraform/.checkov.yaml
-	checkov -d deploy/k8s/ --framework kubernetes
+	checkov -f $(RENDERED) --framework kubernetes
 	hadolint Dockerfile
 
 .PHONY: scan-image
@@ -103,16 +106,25 @@ tf-validate: ## terraform fmt + validate (no cloud calls)
 	terraform -chdir=terraform init -backend=false -input=false
 	terraform -chdir=terraform validate
 
-.PHONY: k8s-render
-k8s-render: ## Render the kustomize output
-	kubectl kustomize deploy/k8s/
+.PHONY: helm-lint
+helm-lint: ## helm lint --strict (default + kind values)
+	helm lint --strict $(CHART)
+	helm lint --strict $(CHART) -f $(CHART)/ci/kind-values.yaml
+
+.PHONY: helm-template
+helm-template: ## Render the chart to bin/rendered-chart.yaml
+	@mkdir -p $(dir $(RENDERED))
+	helm template auditd $(CHART) --namespace $(NAMESPACE) > $(RENDERED)
+	@echo "wrote $(RENDERED)"
 
 .PHONY: k8s-deploy
-k8s-deploy: docker-build ## Create a kind cluster and deploy auditd into it
-	kind create cluster --name $(KIND_NAME) --config deploy/k8s/kind-cluster.yaml
+k8s-deploy: docker-build ## Create a kind cluster, install the chart, run helm test
+	kind create cluster --name $(KIND_NAME) --config deploy/kind-cluster.yaml
 	kind load docker-image $(IMAGE) --name $(KIND_NAME)
-	kubectl apply -k deploy/k8s/
-	kubectl -n audit rollout status deploy/auditd --timeout=90s
+	kubectl --context kind-$(KIND_NAME) apply -f deploy/namespace.yaml
+	helm --kube-context kind-$(KIND_NAME) upgrade --install auditd $(CHART) \
+	  --namespace $(NAMESPACE) -f $(CHART)/ci/kind-values.yaml --wait --timeout 180s
+	helm --kube-context kind-$(KIND_NAME) test auditd --namespace $(NAMESPACE)
 
 .PHONY: k8s-clean
 k8s-clean: ## Delete the kind cluster

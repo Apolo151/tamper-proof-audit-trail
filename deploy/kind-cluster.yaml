@@ -1,10 +1,7 @@
 # Local single-node cluster for `make k8s-deploy`. Not a production topology.
+# Reach the service with `kubectl port-forward` (see the chart's NOTES.txt).
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: audit
 nodes:
   - role: control-plane
-    extraPortMappings:
-      - containerPort: 30080
-        hostPort: 30080
-        protocol: TCP

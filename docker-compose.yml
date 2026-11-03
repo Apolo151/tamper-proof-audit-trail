@@ -1,5 +1,5 @@
 # Local one-command run:  docker compose up --build
-# Mirrors the hardening applied in deploy/k8s/deployment.yaml.
+# Mirrors the hardening applied in deploy/helm/auditd/templates/deployment.yaml.
 services:
   auditd:
     build: .

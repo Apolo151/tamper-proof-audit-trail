@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "auditd chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["replicaCount", "image", "service", "resources", "networkPolicy"],
+  "properties": {
+    "global": {
+      "type": "object"
+    },
+    "replicaCount": {
+      "description": "Single-writer hash chain: more than one replica would fork it.",
+      "const": 1
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "digest": {
+          "type": "string",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
+        },
+        "pullPolicy": {
+          "enum": ["", "Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "logLevel": {
+      "enum": ["debug", "info", "warn", "error"]
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["ClusterIP", "NodePort"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "nodePort": {
+          "oneOf": [
+            { "type": "string", "maxLength": 0 },
+            { "type": "integer", "minimum": 30000, "maximum": 32767 }
+          ]
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": {
+          "type": "object",
+          "required": ["cpu", "memory"]
+        },
+        "limits": {
+          "type": "object",
+          "required": ["cpu", "memory"]
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressFrom": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    }
+  }
+}

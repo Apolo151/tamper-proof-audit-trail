@@ -1,0 +1,82 @@
+# `helm test` (and `ct install`) runs this pod after install. It reuses the
+# signed auditd image - distroless has no curl, so the binary probes the
+# Service itself - and it must pass the namespace's restricted PSS too, or
+# admission rejects it.
+{{- if .Values.networkPolicy.enabled }}
+# The default-deny policy also blocks the test pod; open exactly the egress it
+# needs (DNS + auditd:8080) for the life of the test.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "auditd.fullname" . }}-test-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "auditd.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: helm-test
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "auditd.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+{{- end }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "auditd.fullname" . }}-test-readyz
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "auditd.labels" . | nindent 4 }}
+    app.kubernetes.io/component: helm-test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    checkov.io/skip3: CKV_K8S_8=one-shot helm test pod - a liveness probe has nothing to keep alive
+    checkov.io/skip4: CKV_K8S_9=one-shot helm test pod - it is the readiness check
+    {{- with include "auditd.checkovSkips" . }}
+    {{- . | nindent 4 }}
+    {{- end }}
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    {{- include "auditd.podSecurityContext" . | nindent 4 }}
+  containers:
+    - name: readyz
+      image: {{ include "auditd.image" . | quote }}
+      imagePullPolicy: {{ include "auditd.pullPolicy" . }}
+      args:
+        - -healthcheck
+        - -healthcheck-url
+        - http://{{ include "auditd.fullname" . }}:{{ .Values.service.port }}/readyz
+      securityContext:
+        {{- include "auditd.containerSecurityContext" . | nindent 8 }}
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 32Mi

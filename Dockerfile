@@ -42,7 +42,7 @@ EXPOSE 8080
 VOLUME ["/data"]
 
 # The binary probes itself (exec form, no shell). Kubernetes uses its own
-# HTTP probes instead - see deploy/k8s/deployment.yaml.
+# HTTP probes instead - see deploy/helm/auditd/templates/deployment.yaml.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD ["/auditd", "-healthcheck"]
 
