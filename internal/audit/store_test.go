@@ -110,3 +110,122 @@ func TestStoreReadyAndClose(t *testing.T) {
 		t.Errorf("second Close: %v", err)
 	}
 }
+
+// openWith3 opens a store in dir and appends three events.
+func openWith3(t *testing.T, dir string, actorPrefix string) *Store {
+	t.Helper()
+	s, err := Open(dir, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	for _, a := range []string{"1", "2", "3"} {
+		if _, err := s.Append(Event{Actor: actorPrefix + a, Action: "write", Resource: "db/records"}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	return s
+}
+
+// TestVerifyDiskWhileRunning edits the log file underneath a live store: the
+// in-memory chain is untouched, so only a re-read from disk can notice.
+func TestVerifyDiskWhileRunning(t *testing.T) {
+	logPath := func(dir string) string { return filepath.Join(dir, logFileName) }
+
+	tests := []struct {
+		name       string
+		tamper     func(t *testing.T, dir string)
+		wantReason string
+		wantSeq    uint64
+	}{
+		{
+			name:   "untouched",
+			tamper: func(*testing.T, string) {},
+		},
+		{
+			name: "field edited",
+			tamper: func(t *testing.T, dir string) {
+				rewrite(t, logPath(dir), func(s string) string {
+					return strings.Replace(s, `"actor":"u2"`, `"actor":"mallory"`, 1)
+				})
+			},
+			wantReason: ReasonHashBroken,
+			wantSeq:    2,
+		},
+		{
+			name: "last record deleted",
+			tamper: func(t *testing.T, dir string) {
+				rewrite(t, logPath(dir), func(s string) string {
+					lines := strings.SplitAfter(s, "\n")
+					return strings.Join(lines[:2], "")
+				})
+			},
+			wantReason: ReasonDiskDiverged,
+			wantSeq:    3,
+		},
+		{
+			// The attacker recomputes every hash: the file is a valid chain on
+			// its own, but it is not the chain this process wrote.
+			name: "whole chain rewritten consistently",
+			tamper: func(t *testing.T, dir string) {
+				forged := t.TempDir()
+				_ = openWith3(t, forged, "x")
+				raw, err := os.ReadFile(logPath(forged)) // #nosec G304 -- test temp path
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(logPath(dir), raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantReason: ReasonDiskDiverged,
+			wantSeq:    1,
+		},
+		{
+			name: "garbage line",
+			tamper: func(t *testing.T, dir string) {
+				rewrite(t, logPath(dir), func(s string) string { return s + "not json\n" })
+			},
+			wantReason: ReasonUnreadable,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := openWith3(t, dir, "u")
+			tt.tamper(t, dir)
+
+			res := s.VerifyDisk()
+			if tt.wantReason == "" {
+				if !res.Intact || res.Checked != 3 {
+					t.Fatalf("VerifyDisk = %+v, want intact with 3 checked", res)
+				}
+				return
+			}
+			if res.Intact {
+				t.Fatalf("VerifyDisk = %+v, want broken (%s)", res, tt.wantReason)
+			}
+			if res.Reason != tt.wantReason {
+				t.Errorf("Reason = %q, want %q", res.Reason, tt.wantReason)
+			}
+			if tt.wantSeq != 0 && derefSeq(res.BrokenSeq) != tt.wantSeq {
+				t.Errorf("BrokenSeq = %d, want %d", derefSeq(res.BrokenSeq), tt.wantSeq)
+			}
+			// The live chain is unaffected: appends keep working.
+			if _, err := s.Append(Event{Actor: "after", Action: "write", Resource: "r"}); err != nil {
+				t.Errorf("Append after tamper: %v", err)
+			}
+		})
+	}
+}
+
+func rewrite(t *testing.T, path string, edit func(string) string) {
+	t.Helper()
+	raw, err := os.ReadFile(path) // #nosec G304 -- test temp path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(edit(string(raw))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

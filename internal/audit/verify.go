@@ -6,6 +6,9 @@ const (
 	ReasonPrevHashBroken = "prev_hash mismatch"
 	ReasonHashBroken     = "hash mismatch"
 	ReasonEncodingError  = "canonical encoding error"
+	// Returned by Store.VerifyDisk only.
+	ReasonDiskDiverged = "on-disk chain diverges from committed chain"
+	ReasonUnreadable   = "audit log unreadable"
 )
 
 // VerifyResult is the outcome of walking the chain. It is safe to serialise
