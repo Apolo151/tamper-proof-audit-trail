@@ -2,8 +2,8 @@
 # unknown keys are rejected, so a typo (or an attempt to set securityContext,
 # which is deliberately not configurable) fails at install time.
 
-# Must stay 1: the hash chain is a single-writer log on an emptyDir. Two pods
-# would fork the chain. The schema enforces this.
+# Must stay 1: the hash chain is a single-writer log. Two pods would fork the
+# chain. The schema enforces this.
 replicaCount: 1
 
 image:
@@ -22,6 +22,19 @@ logLevel: info
 # How often the on-disk chain is re-verified (Go duration, >= 1s). Keep it well
 # under the 5m threshold of the AuditdChainVerifyStale alert.
 chainVerifyInterval: 60s
+
+# Where the chain lives. Disabled = emptyDir: the chain is wiped by every
+# restart and rollout (fine for demos, not for evidence). Enabled = a
+# ReadWriteOnce PVC; with replicas: 1 and the Recreate strategy only one pod
+# ever mounts it. The PVC is annotated helm.sh/resource-policy: keep, so
+# `helm uninstall` does not delete audit history.
+persistence:
+  enabled: false
+  size: 1Gi
+  # "" = the cluster's default StorageClass.
+  storageClass: ""
+  # Use an existing PVC instead of creating one.
+  existingClaim: ""
 
 service:
   type: ClusterIP
@@ -61,4 +74,10 @@ metrics:
     enabled: false
     interval: 30s
     # Extra labels, e.g. to match your Prometheus' serviceMonitorSelector.
+    labels: {}
+  # The SLO + chain-integrity rules from files/prometheus/ as a
+  # prometheus-operator PrometheusRule (requires its CRD).
+  prometheusRule:
+    enabled: false
+    # Extra labels, e.g. to match your Prometheus' ruleSelector.
     labels: {}
