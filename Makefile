@@ -37,6 +37,20 @@ tidy: ## go mod tidy + gofmt
 docker-build: ## Build the hardened distroless image
 	docker build -t $(IMAGE) .
 
+# Signed image published by CI. Verification is pinned to the exact workflow
+# identity that signs it - without that, any GitHub workflow's signature passes.
+GHCR_IMAGE    := ghcr.io/apolo151/auditd
+CERT_IDENTITY := https://github.com/Apolo151/tamper-proof-audit-trail/.github/workflows/devsecops.yml@refs/heads/main
+CERT_ISSUER   := https://token.actions.githubusercontent.com
+
+.PHONY: verify-image
+verify-image: ## Verify signature + SBOM + provenance of a published image (IMAGE_REF=ghcr.io/...@sha256:...)
+	@test -n "$(IMAGE_REF)" || { echo "usage: make verify-image IMAGE_REF=$(GHCR_IMAGE)@sha256:<digest>"; exit 2; }
+	cosign verify --certificate-identity "$(CERT_IDENTITY)" --certificate-oidc-issuer "$(CERT_ISSUER)" "$(IMAGE_REF)" >/dev/null
+	cosign verify-attestation --type spdxjson --certificate-identity "$(CERT_IDENTITY)" --certificate-oidc-issuer "$(CERT_ISSUER)" "$(IMAGE_REF)" >/dev/null
+	gh attestation verify "oci://$(IMAGE_REF)" --repo Apolo151/tamper-proof-audit-trail
+	@echo "OK: $(IMAGE_REF) is signed by CI on main, with SBOM + SLSA provenance"
+
 .PHONY: compose-up
 compose-up: ## Run via docker compose (read-only rootfs, caps dropped)
 	docker compose up --build -d

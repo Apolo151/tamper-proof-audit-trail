@@ -58,3 +58,13 @@ Each `make scan-*` target needs its tool on `PATH`
   an `emptyDir`. Multi-replica needs a StatefulSet + RWO PVC or a shared store.
 - The hash pre-image hashes the client's **compacted raw metadata bytes**, not a
   re-marshalled map - don't "normalise" metadata through `map[string]any`.
+- Pin every workflow `uses:` to a full commit SHA with a `# vX.Y.Z` comment, and
+  base images by `@sha256:` digest. Never `@master`/bare tags. Check with
+  `actionlint` + `zizmor --offline`.
+- GHCR refs must be **lowercase**: `ghcr.io/apolo151/auditd` (owner is `Apolo151`).
+- Sign/attest **digests, not tags**. `publish` pushes the tarball `image` scanned
+  (never rebuilds). Publishing runs on `main` only.
+- The signer identity is the workflow path + `@refs/heads/main`. Renaming
+  `devsecops.yml` changes it, so update `CERT_IDENTITY` in the Makefile too.
+- Provenance uses `create-storage-record: false`: storage records are only for
+  org-owned repos.
