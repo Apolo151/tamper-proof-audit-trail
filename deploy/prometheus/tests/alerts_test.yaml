@@ -1,0 +1,218 @@
+# Unit tests for the auditd alerts:  promtool test rules deploy/prometheus/tests/alerts_test.yaml
+#
+# Each scenario feeds synthetic series and asserts which alerts fire (and,
+# just as important, which must NOT fire) at given evaluation times.
+# Series notation: 'a+bxN' = start at a, add b each interval, N more samples.
+rule_files:
+  - ../recording-rules.yaml
+  - ../alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # --- 1. Sustained 10% errors: both page-level burn alerts fire ------------
+  - interval: 1m
+    input_series:
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="201"}'
+        values: '0+54x180'
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="500"}'
+        values: '0+6x180'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: AuditdErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              severity: page
+              slo: availability
+            exp_annotations:
+              summary: auditd is burning its availability error budget 14.4x too fast
+              description: >-
+                10% of audit API requests failed (5xx) over the last 5m, and
+                over 1h the rate is above 7.2%. At this rate the 30-day budget
+                is gone in about 2 days.
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-error-budget-burn.md
+      - eval_time: 70m
+        alertname: AuditdErrorBudgetBurnSlow
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              severity: page
+              slo: availability
+            exp_annotations:
+              summary: auditd is burning its availability error budget 6x too fast
+              description: >-
+                More than 3% of audit API requests failed (5xx) over both 6h and
+                30m. At this rate the 30-day budget is gone in about 5 days.
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-error-budget-burn.md
+      # `for: 2m` - one bad evaluation is not enough to page.
+      - eval_time: 1m
+        alertname: AuditdErrorBudgetBurnFast
+        exp_alerts: []
+
+  # --- 2. A 3-minute total outage in an otherwise healthy hour --------------
+  # The 5m window is far over threshold, but the 1h window (~4.8%) is not:
+  # the two-window rule keeps a brief blip from paging anyone.
+  - interval: 1m
+    input_series:
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="201"}'
+        values: '0+60x80'
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="500"}'
+        values: '0x59 60+60x2 180x20'
+    alert_rule_test:
+      - eval_time: 63m
+        alertname: AuditdErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: AuditdErrorBudgetBurnFast
+        exp_alerts: []
+
+  # --- 3. Healthy: 0.1% errors (inside the 0.5% budget) - nothing fires ------
+  # 4xx never counts: 20% client errors here must not burn the budget.
+  - interval: 5m
+    input_series:
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="201"}'
+        values: '0+7992x100'
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="400"}'
+        values: '0+2000x100'
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="503"}'
+        values: '0+8x100'
+      # Probe failures are not user traffic and are excluded from the SLI.
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="GET /readyz",method="GET",code="503"}'
+        values: '0+500x100'
+    alert_rule_test:
+      - eval_time: 8h
+        alertname: AuditdErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 8h
+        alertname: AuditdErrorBudgetBurnSlow
+        exp_alerts: []
+      - eval_time: 8h
+        alertname: AuditdErrorBudgetBurnTicket
+        exp_alerts: []
+
+  # --- 4. Slow leak at 1% (2x budget) for days: ticket, but no page ---------
+  - interval: 10m
+    input_series:
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="201"}'
+        values: '0+990x500'
+      - series: 'auditd_http_requests_total{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",code="500"}'
+        values: '0+10x500'
+    alert_rule_test:
+      - eval_time: 3d
+        alertname: AuditdErrorBudgetBurnTicket
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              severity: ticket
+              slo: availability
+            exp_annotations:
+              summary: auditd is consuming its error budget faster than the SLO allows
+              description: >-
+                The 5xx ratio has been above the 0.5% budget over 3d and 6h. Not
+                urgent, but the SLO will be missed if this continues.
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-error-budget-burn.md
+      - eval_time: 3d
+        alertname: AuditdErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 3d
+        alertname: AuditdErrorBudgetBurnSlow
+        exp_alerts: []
+
+  # --- 5. Chain tampered: fires on the first evaluation that sees 0 ---------
+  - interval: 1m
+    input_series:
+      - series: 'auditd_chain_intact{job="auditd",instance="a:9090"}'
+        values: '1 1 1 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AuditdChainTampered
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: AuditdChainTampered
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              instance: a:9090
+              severity: critical
+              team: security
+            exp_annotations:
+              summary: "auditd hash chain is broken on a:9090 - possible tampering"
+              description: >-
+                The on-disk audit chain no longer verifies; auditd_chain_broken_seq
+                holds the first broken record. Treat as a security incident. DO NOT
+                restart or redeploy the pod - the chain lives on an emptyDir and the
+                evidence would be destroyed.
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-chain-tampered.md
+
+  # --- 6. Verifier stalls: timestamp stops advancing -------------------------
+  - interval: 1m
+    input_series:
+      # healthy instance: the timestamp tracks wall-clock time
+      - series: 'auditd_chain_last_verify_timestamp_seconds{job="auditd",instance="ok:9090"}'
+        values: '0+60x20'
+      # stuck at t=60s from the start
+      - series: 'auditd_chain_last_verify_timestamp_seconds{job="auditd",instance="stuck:9090"}'
+        values: '60x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AuditdChainVerifyStale
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: AuditdChainVerifyStale
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              instance: stuck:9090
+              severity: warning
+              team: security
+            exp_annotations:
+              summary: "auditd has not verified its chain for over 5 minutes on stuck:9090"
+              description: >-
+                Last successful verification run was 11m 0s ago. Tampering
+                would currently go undetected.
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-chain-verify-stale.md
+
+  # --- 7. Scrape target down, then gone -------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'up{job="auditd",instance="a:9090"}'
+        values: '1 1 0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AuditdTargetDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: AuditdTargetDown
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              instance: a:9090
+              severity: page
+            exp_annotations:
+              summary: "Prometheus cannot scrape auditd on a:9090"
+              description: >-
+                The scrape has failed for 5 minutes. Either auditd is down, or
+                its metrics port is unreachable. Either way the SLO and tamper
+                alerts are blind.
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-target-down.md
+      - eval_time: 8m
+        alertname: AuditdTargetMissing
+        exp_alerts: []
+
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: AuditdTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              severity: page
+            exp_annotations:
+              summary: No auditd scrape target exists
+              description: >-
+                Prometheus has no `up` series for job="auditd" - the target was
+                removed from service discovery (deleted Deployment, label change,
+                NetworkPolicy or ServiceMonitor misconfiguration).
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-target-down.md

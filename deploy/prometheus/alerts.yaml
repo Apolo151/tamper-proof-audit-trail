@@ -1,0 +1,125 @@
+# auditd alerts. Every alert links a runbook in docs/runbooks/.
+#
+# Availability SLO: 99.5% of API requests succeed over 30 days.
+#   error budget   = 0.5%  (~3.6 h of total failure per 30 days)
+#   burn rate N    = errors are arriving N x faster than the budget allows
+#
+# Multi-window, multi-burn-rate (Google SRE Workbook, ch. 5): each alert needs
+# BOTH a long window (is this significant?) and a short window (is it still
+# happening?). The short window makes the alert resolve quickly after a fix.
+#   14.4x over 1h & 5m   -> 2% of the 30d budget gone in 1h  -> page
+#    6x   over 6h & 30m  -> 5% of the budget gone in 6h      -> page
+#    1x   over 3d & 6h   -> 10% of the budget gone in 3d     -> ticket
+groups:
+  - name: auditd-slo
+    rules:
+      - alert: AuditdErrorBudgetBurnFast
+        expr: |
+          auditd:sli_errors:ratio_rate1h > (14.4 * 0.005)
+          and
+          auditd:sli_errors:ratio_rate5m > (14.4 * 0.005)
+        for: 2m
+        labels:
+          severity: page
+          slo: availability
+        annotations:
+          summary: auditd is burning its availability error budget 14.4x too fast
+          description: >-
+            {{ $value | humanizePercentage }} of audit API requests failed (5xx)
+            over the last 5m, and over 1h the rate is above 7.2%. At this rate
+            the 30-day budget is gone in about 2 days.
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-error-budget-burn.md
+
+      - alert: AuditdErrorBudgetBurnSlow
+        expr: |
+          auditd:sli_errors:ratio_rate6h > (6 * 0.005)
+          and
+          auditd:sli_errors:ratio_rate30m > (6 * 0.005)
+        for: 15m
+        labels:
+          severity: page
+          slo: availability
+        annotations:
+          summary: auditd is burning its availability error budget 6x too fast
+          description: >-
+            More than 3% of audit API requests failed (5xx) over both 6h and 30m.
+            At this rate the 30-day budget is gone in about 5 days.
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-error-budget-burn.md
+
+      - alert: AuditdErrorBudgetBurnTicket
+        expr: |
+          auditd:sli_errors:ratio_rate3d > 0.005
+          and
+          auditd:sli_errors:ratio_rate6h > 0.005
+        for: 1h
+        labels:
+          severity: ticket
+          slo: availability
+        annotations:
+          summary: auditd is consuming its error budget faster than the SLO allows
+          description: >-
+            The 5xx ratio has been above the 0.5% budget over 3d and 6h. Not
+            urgent, but the SLO will be missed if this continues.
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-error-budget-burn.md
+
+  - name: auditd-integrity
+    rules:
+      # A security incident, not an availability one: it fires immediately
+      # (no `for:`) and goes to security as well as on-call.
+      - alert: AuditdChainTampered
+        expr: auditd_chain_intact{job="auditd"} == 0
+        labels:
+          severity: critical
+          team: security
+        annotations:
+          summary: "auditd hash chain is broken on {{ $labels.instance }} - possible tampering"
+          description: >-
+            The on-disk audit chain no longer verifies; auditd_chain_broken_seq
+            holds the first broken record. Treat as a security incident. DO NOT restart or redeploy the pod -
+            the chain lives on an emptyDir and the evidence would be destroyed.
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-chain-tampered.md
+
+      # Guards the guard: if the verifier stops running, AuditdChainTampered
+      # can never fire.
+      - alert: AuditdChainVerifyStale
+        expr: time() - auditd_chain_last_verify_timestamp_seconds{job="auditd"} > 300
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "auditd has not verified its chain for over 5 minutes on {{ $labels.instance }}"
+          description: >-
+            Last successful verification run was {{ $value | humanizeDuration }} ago.
+            Tampering would currently go undetected.
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-chain-verify-stale.md
+
+  - name: auditd-target
+    rules:
+      - alert: AuditdTargetDown
+        expr: up{job="auditd"} == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Prometheus cannot scrape auditd on {{ $labels.instance }}"
+          description: >-
+            The scrape has failed for 5 minutes. Either auditd is down, or
+            its metrics port is unreachable. Either way the SLO and
+            tamper alerts are blind.
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-target-down.md
+
+      # `up == 0` needs a target to exist; if service discovery loses auditd
+      # entirely there is no series at all.
+      - alert: AuditdTargetMissing
+        expr: absent(up{job="auditd"})
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: No auditd scrape target exists
+          description: >-
+            Prometheus has no `up` series for job="auditd" - the target was
+            removed from service discovery (deleted Deployment, label change,
+            NetworkPolicy or ServiceMonitor misconfiguration).
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-target-down.md

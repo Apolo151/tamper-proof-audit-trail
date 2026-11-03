@@ -9,6 +9,7 @@ KIND_NAME  := audit
 CHART      := deploy/helm/auditd
 NAMESPACE  := audit
 RENDERED   := bin/rendered-chart.yaml
+PROM_RULES := deploy/prometheus
 
 GOFLAGS_BUILD := -trimpath -ldflags="-w -s"
 
@@ -130,6 +131,46 @@ k8s-deploy: docker-build ## Create a kind cluster, install the chart, run helm t
 k8s-clean: ## Delete the kind cluster
 	kind delete cluster --name $(KIND_NAME)
 
+## --- observability ----------------------------------------------------
+
+.PHONY: check-rules
+check-rules: ## promtool check rules (syntax + PromQL)
+	promtool check rules $(PROM_RULES)/recording-rules.yaml $(PROM_RULES)/alerts.yaml
+
+.PHONY: test-rules
+test-rules: check-rules ## promtool unit tests for every alert (fires / must-not-fire)
+	promtool test rules $(PROM_RULES)/tests/alerts_test.yaml
+
+.PHONY: check-metrics
+check-metrics: build ## Run the binary and lint its /metrics output with promtool
+	@set -e; d=$$(mktemp -d); \
+	DATA_DIR=$$d PORT=18082 METRICS_PORT=19092 $(BIN) >/dev/null 2>&1 & pid=$$!; \
+	trap 'kill $$pid 2>/dev/null; rm -rf $$d' EXIT; sleep 1; \
+	curl -sf -XPOST localhost:18082/api/v1/audit -H 'content-type: application/json' \
+	  -d '{"actor":"ci","action":"check","resource":"metrics"}' >/dev/null; \
+	curl -sf localhost:19092/metrics | promtool check metrics; \
+	echo "OK: /metrics passes promtool check metrics"
+
+.PHONY: tamper-alert-demo
+tamper-alert-demo: build ## Live server: edit the log on disk, watch auditd_chain_intact flip to 0
+	@set -e; d=$$(mktemp -d); \
+	DATA_DIR=$$d PORT=18083 METRICS_PORT=19093 VERIFY_INTERVAL=1s $(BIN) >/dev/null 2>&1 & pid=$$!; \
+	trap 'kill $$pid 2>/dev/null; rm -rf $$d' EXIT; sleep 1; \
+	for a in alice bob carol; do \
+	  curl -sf -XPOST localhost:18083/api/v1/audit -H 'content-type: application/json' \
+	    -d "{\"actor\":\"$$a\",\"action\":\"write\",\"resource\":\"db/records\"}" >/dev/null; \
+	done; sleep 1.5; \
+	echo "--- before:"; curl -s localhost:19093/metrics | grep -E '^auditd_chain_(intact|broken_seq|records) '; \
+	echo "--- tampering with the file under the running server: bob -> mallory"; \
+	sed -i 's/"actor":"bob"/"actor":"mallory"/' $$d/audit.log.jsonl; sleep 1.5; \
+	echo "--- after:"; curl -s localhost:19093/metrics | grep -E '^auditd_chain_(intact|broken_seq|records) '; \
+	curl -s 'localhost:18083/api/v1/audit/verify'; \
+	if curl -s localhost:19093/metrics | grep -q '^auditd_chain_intact 0$$'; then \
+	  echo "OK: AuditdChainTampered would fire (auditd_chain_intact == 0)"; \
+	else \
+	  echo "FAIL: tampering not reflected in metrics"; exit 1; \
+	fi
+
 ## --- demos ----------------------------------------------------------
 
 .PHONY: verify
@@ -140,7 +181,7 @@ verify: ## Hit a running server's verify endpoint (expects it on :8080)
 tamper-demo: build ## Show the chain catching an on-disk edit (offline, uses ./demo-data)
 	@set -e; \
 	rm -rf $(DEMO_DIR); mkdir -p $(DEMO_DIR); \
-	DATA_DIR=$(DEMO_DIR) PORT=18080 $(BIN) & pid=$$!; sleep 1; \
+	DATA_DIR=$(DEMO_DIR) PORT=18080 METRICS_PORT=19080 $(BIN) & pid=$$!; sleep 1; \
 	for a in alice bob carol; do \
 	  curl -s -XPOST localhost:18080/api/v1/audit -H 'content-type: application/json' \
 	    -d "{\"actor\":\"$$a\",\"action\":\"write\",\"resource\":\"db/records\"}" >/dev/null; \
