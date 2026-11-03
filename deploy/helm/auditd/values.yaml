@@ -19,6 +19,10 @@ image:
 
 logLevel: info
 
+# How often the on-disk chain is re-verified (Go duration, >= 1s). Keep it well
+# under the 5m threshold of the AuditdChainVerifyStale alert.
+chainVerifyInterval: 60s
+
 service:
   type: ClusterIP
   port: 80
@@ -42,3 +46,19 @@ networkPolicy:
   #  - namespaceSelector:
   #      matchLabels:
   #        kubernetes.io/metadata.name: ingress-nginx
+
+metrics:
+  # Separate listener for GET /metrics - not reachable through the API port.
+  port: 9090
+  # Peers allowed to scrape the metrics port, as NetworkPolicy `from` entries.
+  # Empty = pods in the release namespace only. Typically your Prometheus:
+  #  - namespaceSelector:
+  #      matchLabels:
+  #        kubernetes.io/metadata.name: monitoring
+  scrapeFrom: []
+  # prometheus-operator ServiceMonitor (requires its CRD to be installed).
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    # Extra labels, e.g. to match your Prometheus' serviceMonitorSelector.
+    labels: {}

@@ -14,7 +14,8 @@ spec:
     - Ingress
     - Egress
 ---
-# auditd needs: inbound HTTP on 8080, and outbound DNS only.
+# auditd needs: inbound HTTP on 8080 (API clients), inbound on the metrics
+# port (the scraper only), and outbound DNS. Nothing else.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -41,6 +42,17 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - from:
+        {{- with .Values.metrics.scrapeFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- else }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.metrics.port }}
   egress:
     - to:
         - namespaceSelector:
