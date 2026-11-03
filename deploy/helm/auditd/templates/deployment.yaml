@@ -10,9 +10,9 @@ metadata:
     {{- . | nindent 4 }}
   {{- end }}
 spec:
-  # Single writer: the hash chain is per-pod state on an emptyDir. Two replicas
-  # would fork the chain (values.schema.json pins this to 1). Production path:
-  # StatefulSet + RWO PVC, or move the chain into a shared WORM datastore.
+  # Single writer: two replicas would fork the chain (values.schema.json pins
+  # this to 1). Recreate guarantees the old pod releases the RWO volume before
+  # the new one mounts it.
   replicas: {{ .Values.replicaCount }}
   strategy:
     type: Recreate
@@ -79,6 +79,11 @@ spec:
               mountPath: /tmp
       volumes:
         - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "auditd.fullname" .)) }}
+          {{- else }}
           emptyDir: {}
+          {{- end }}
         - name: tmp
           emptyDir: {}

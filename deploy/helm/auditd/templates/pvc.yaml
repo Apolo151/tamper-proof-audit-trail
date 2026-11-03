@@ -1,0 +1,22 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "auditd.fullname" . }}-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "auditd.labels" . | nindent 4 }}
+  annotations:
+    # Audit history is evidence: never delete it as a side effect of
+    # `helm uninstall`. Removing it must be a deliberate, separate act.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

@@ -6,7 +6,7 @@ description: >-
 type: application
 # Chart version: bump on every chart change (ct lint enforces this on PRs).
 # A published version is immutable - CI never overwrites it in GHCR.
-version: 0.2.0
+version: 0.3.0
 # Overridden at publish time with the image tag (sha-<short>) the chart pins.
 appVersion: "main"
 kubeVersion: ">=1.25.0-0"  # Pod Security Admission is GA from 1.25
