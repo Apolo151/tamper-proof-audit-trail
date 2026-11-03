@@ -33,11 +33,11 @@ defaults:
 
 env:
   GO_VERSION: "1.26"
-  HELM_VERSION: v3.22.1
+  HELM_VERSION: v4.3.1 # ct 3.15 lint + install verified against Helm 4 on kind
   IMAGE: auditd
   CHART_DIR: deploy/helm/auditd
-  # promtool comes from the official release tarball, verified against this
-  # pinned checksum (from the release's sha256sums.txt) before it is run.
+  # promtool + prometheus come from the official release tarball, verified
+  # against this pinned checksum (from the release's sha256sums.txt) first.
   PROMETHEUS_VERSION: "3.15.1"
   PROMETHEUS_SHA256: 6a726885328ad9efebbf36e876ce2fb6225468a71fd1e7ce3ba666d5f4d97a84
 
@@ -197,7 +197,9 @@ jobs:
   # 5c. Observability: the alert rules are code, so they get unit tests.
   #     promtool checks rule syntax, runs every alert scenario (fires / must
   #     not fire), lints the real /metrics output of the binary, and the
-  #     tamper demo proves an on-disk edit flips auditd_chain_intact to 0.
+  #     tamper demo proves an on-disk edit flips auditd_chain_intact to 0;
+  #     finally a real Prometheus evaluates the rules and must fire
+  #     AuditdChainTampered end to end.
   observability:
     needs: test
     runs-on: ubuntu-latest
@@ -209,7 +211,7 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
-      - name: install promtool (checksum-verified)
+      - name: install promtool + prometheus (checksum-verified)
         run: |
           tarball="prometheus-$PROMETHEUS_VERSION.linux-amd64.tar.gz"
           curl -sSfL -o "$RUNNER_TEMP/$tarball" \
@@ -217,7 +219,8 @@ jobs:
           echo "$PROMETHEUS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/bin"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" --strip-components=1 \
-            "prometheus-$PROMETHEUS_VERSION.linux-amd64/promtool"
+            "prometheus-$PROMETHEUS_VERSION.linux-amd64/promtool" \
+            "prometheus-$PROMETHEUS_VERSION.linux-amd64/prometheus"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: promtool check rules
         run: make check-rules
@@ -225,8 +228,10 @@ jobs:
         run: make test-rules
       - name: promtool check metrics (real /metrics output)
         run: make check-metrics
-      - name: tamper -> alert demo
+      - name: tamper -> metric demo
         run: make tamper-alert-demo
+      - name: tamper -> real Prometheus alert fires
+        run: make prometheus-alert-demo
 
   # 6. Build the image and scan it for CVEs, then publish an SBOM. Runs only
   #    after every source-level gate has passed. On main, the exact image that
@@ -357,13 +362,24 @@ jobs:
         env:
           REF: ${{ steps.push.outputs.image }}@${{ steps.push.outputs.digest }}
         run: cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$REF"
+      # actions/attest: with no predicate it generates SLSA build provenance;
+      # with sbom-path it attests the SBOM. (attest-build-provenance and
+      # attest-sbom are deprecated wrappers around it.)
       - name: SLSA build provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ steps.push.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
           # Storage records are only supported for organization-owned repos.
+          create-storage-record: false
+      - name: SBOM attestation (GitHub attestation store)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
           create-storage-record: false
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -448,6 +464,15 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/devsecops.yml"
           echo "SLSA provenance OK" >> "$GITHUB_STEP_SUMMARY"
+      - name: gh attestation verify (SBOM)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify "oci://$REF" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/devsecops.yml" \
+            --predicate-type https://spdx.dev/Document/v2.3
+          echo "SBOM attestation (GitHub store) OK" >> "$GITHUB_STEP_SUMMARY"
       - name: cosign verify (Helm chart)
         if: needs.publish.outputs.chart-digest != ''
         env:
