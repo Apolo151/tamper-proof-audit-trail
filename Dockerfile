@@ -2,7 +2,15 @@
 # Pinned by digest so the build is reproducible and a re-pushed tag cannot
 # swap the toolchain underneath us. The tag is kept for readability; Dependabot
 # (docker ecosystem) bumps the digest weekly so Go stdlib CVE fixes still land.
-FROM golang:1.27-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS build
+# The build stage always runs on the build host's platform and cross-compiles
+# (Go needs no emulation), so `docker buildx build --platform linux/arm64` is
+# as fast as a native build. BuildKit (the default builder) sets BUILDPLATFORM,
+# TARGETOS and TARGETARCH. Do NOT give these ARGs defaults: a default
+# overrides BuildKit's value and silently builds the host arch for every
+# platform. If they are ever empty, Go falls back to the host platform.
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS build
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -18,7 +26,7 @@ COPY . .
 # - -trimpath     -> strip local filesystem paths from the binary (build flag,
 #                    NOT an ldflag) for reproducibility
 # - -w -s         -> drop DWARF + symbol table: smaller image, less to fingerprint
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-w -s" -o /out/auditd ./cmd/auditd
 
 # Pre-create the data directory owned by the non-root runtime UID. distroless
