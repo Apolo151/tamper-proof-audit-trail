@@ -84,24 +84,30 @@ func (a *api) handleAppend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, rec)
 }
 
+// Page sizes for GET /api/v1/audit: an unpaged request must not serialise the
+// whole chain, which grows without bound.
+const (
+	defaultPageSize = 100
+	maxPageSize     = 1000
+)
+
 type listResponse struct {
-	Count   int            `json:"count"`
+	Count   int            `json:"count"` // records in the whole chain
+	Limit   int            `json:"limit"`
+	Offset  int            `json:"offset"`
 	Records []audit.Record `json:"records"`
 }
 
 func (a *api) handleList(w http.ResponseWriter, r *http.Request) {
 	all := a.store.List()
 
-	limit := clampAtoi(r.URL.Query().Get("limit"), len(all), 0, len(all))
+	limit := clampAtoi(r.URL.Query().Get("limit"), defaultPageSize, 0, maxPageSize)
 	offset := clampAtoi(r.URL.Query().Get("offset"), 0, 0, len(all))
 
-	end := offset + limit
-	if end > len(all) {
-		end = len(all)
-	}
+	end := min(offset+limit, len(all))
 	page := all[offset:end]
 
-	writeJSON(w, http.StatusOK, listResponse{Count: len(all), Records: page})
+	writeJSON(w, http.StatusOK, listResponse{Count: len(all), Limit: limit, Offset: offset, Records: page})
 }
 
 func (a *api) handleVerify(w http.ResponseWriter, r *http.Request) {
