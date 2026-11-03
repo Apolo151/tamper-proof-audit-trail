@@ -1,0 +1,37 @@
+# SLI recording rules for auditd.
+#
+# SLI (availability): the share of API requests (/api/v1/audit*) that did NOT
+# fail server-side. Errors are 5xx only - a 4xx is the client's fault and does
+# not burn the budget. Health probes are excluded: they are not user traffic.
+#
+# One ratio per alerting window, precomputed so the burn-rate alerts stay cheap
+# and readable. `sum by (job)` keeps the job label for routing.
+groups:
+  - name: auditd-sli
+    interval: 30s
+    rules:
+      - record: auditd:sli_errors:ratio_rate5m
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[5m]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[5m]))
+      - record: auditd:sli_errors:ratio_rate30m
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[30m]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[30m]))
+      - record: auditd:sli_errors:ratio_rate1h
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[1h]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[1h]))
+      - record: auditd:sli_errors:ratio_rate6h
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[6h]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[6h]))
+      - record: auditd:sli_errors:ratio_rate3d
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[3d]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[3d]))

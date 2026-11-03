@@ -16,6 +16,10 @@ Kubernetes manifests, and a shift-left GitHub Actions security pipeline.
 | `internal/config/` | env-var configuration + validation |
 | `internal/audit/` | the hash chain: `event.go` `chain.go` `store.go` `verify.go` |
 | `internal/httpapi/` | HTTP handlers, middleware, server setup |
+| `internal/metrics/` | stdlib-only Prometheus text-format registry (counter/gauge/histogram) |
+| `internal/telemetry/` | auditd's metric set + background on-disk chain verifier |
+| `deploy/prometheus/` | recording + alert rules, `tests/alerts_test.yaml` (promtool) |
+| `docs/runbooks/` | one runbook per alert (linked via `runbook_url`) |
 | `terraform/` | S3 (Object Lock/WORM) + KMS, Checkov-clean, **validate-only** |
 | `deploy/helm/auditd/` | hardened Helm chart; `ci/kind-values.yaml` for kind / `ct install` |
 | `deploy/namespace.yaml` | PSS-restricted namespace, applied before `helm install` (not in the chart) |
@@ -66,6 +70,13 @@ Each `make scan-*` target needs its tool on `PATH`
 - The helm test pod must pass restricted PSS too, and needs its own egress
   NetworkPolicy because the chart's default-deny also covers it.
 - Checkov runs on the **rendered** chart (`make helm-template`), not on templates.
+- Verification reads the file **on disk** (`Store.VerifyDisk`), never the in-memory
+  chain: memory only changes via Append, so it can't show tampering.
+- Metrics labels must stay bounded: route = `r.Pattern` (`unmatched` if empty),
+  never the raw path or any request field.
+- `/metrics` is on `METRICS_PORT` (9090), a separate listener. Every metric
+  name/label change must be mirrored in `deploy/prometheus/` + its promtool tests.
+- `make test-rules` / `check-metrics` need `promtool` on PATH (Prometheus release tarball).
 - The hash pre-image hashes the client's **compacted raw metadata bytes**, not a
   re-marshalled map - don't "normalise" metadata through `map[string]any`.
 - Pin every workflow `uses:` to a full commit SHA with a `# vX.Y.Z` comment, and
