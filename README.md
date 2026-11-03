@@ -51,7 +51,7 @@ correctness decision in the codebase (`internal/audit/event.go`).
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/v1/audit` | append an event; returns the committed record (201) |
-| `GET`  | `/api/v1/audit` | list the chain (`?limit=&offset=`) |
+| `GET`  | `/api/v1/audit` | list the chain, paged (`?limit=` default 100, max 1000; `&offset=`) |
 | `GET`  | `/api/v1/audit/verify` | walk + recompute the chain; `?strict=1` → 409 if broken |
 | `GET`  | `/healthz` | liveness |
 | `GET`  | `/readyz` | readiness (data dir present, log file open) |
@@ -108,7 +108,8 @@ kubectl -n audit port-forward svc/auditd 8080:80
 
 # or install the published, signed chart (pinned to the signed image digest)
 kubectl apply -f deploy/namespace.yaml
-helm install auditd oci://ghcr.io/apolo151/charts/auditd --version 0.2.0 -n audit
+helm install auditd oci://ghcr.io/apolo151/charts/auditd --version 0.3.0 -n audit \
+  --set persistence.enabled=true   # keep the chain across restarts (PVC, kept on uninstall)
 
 # the tamper demo (offline): 3 records, edit one on disk, watch verify catch it
 make tamper-demo
@@ -145,14 +146,24 @@ while a real outage pages within minutes.
 | `AuditdErrorBudgetBurnFast` | burn > 14.4x over 1h **and** 5m | page | [error-budget-burn](docs/runbooks/auditd-error-budget-burn.md) |
 | `AuditdErrorBudgetBurnSlow` | burn > 6x over 6h **and** 30m | page | [error-budget-burn](docs/runbooks/auditd-error-budget-burn.md) |
 | `AuditdErrorBudgetBurnTicket` | burn > 1x over 3d **and** 6h | ticket | [error-budget-burn](docs/runbooks/auditd-error-budget-burn.md) |
+| `AuditdLatencyBudgetBurnFast` / `Slow` | >14.4% / >6% of writes slower than 250ms (1h+5m / 6h+30m) | page | [latency-budget-burn](docs/runbooks/auditd-latency-budget-burn.md) |
 | `AuditdChainTampered` | `auditd_chain_intact == 0`, fires immediately | critical / security | [chain-tampered](docs/runbooks/auditd-chain-tampered.md) |
 | `AuditdChainVerifyStale` | no verification for > 5m | warning / security | [chain-verify-stale](docs/runbooks/auditd-chain-verify-stale.md) |
 | `AuditdTargetDown` / `AuditdTargetMissing` | `up == 0` / `absent(up)` | page | [target-down](docs/runbooks/auditd-target-down.md) |
 
-Rules live in `deploy/prometheus/`. Every alert has `promtool test rules` cases
-for both firing and **must-not-fire** (`make test-rules`). The tests were
-mutation-checked: breaking an expectation makes them fail. In-cluster, enable
-`metrics.serviceMonitor.enabled` for prometheus-operator.
+A second SLO covers **latency**: 99% of writes (`POST /api/v1/audit`) within
+250ms, computed from the histogram's `le="0.25"` bucket. It uses the same
+two-window burn rates ([latency runbook](docs/runbooks/auditd-latency-budget-burn.md)).
+
+The rules live in the chart (`deploy/helm/auditd/files/prometheus/`) as the only
+copy. They're shipped as a PrometheusRule (`metrics.prometheusRule.enabled`)
+and unit-tested by `deploy/prometheus/tests/`. Every alert has `promtool test
+rules` cases for both firing and **must-not-fire** (`make test-rules`). The
+tests were mutation-checked: breaking an expectation makes them fail.
+`make prometheus-alert-demo` (also in CI) runs a real Prometheus against a live
+auditd and waits for `AuditdChainTampered` to reach `firing` after the log is
+tampered with. In-cluster, enable `metrics.serviceMonitor.enabled` and
+`metrics.prometheusRule.enabled` for prometheus-operator.
 
 > Scope: this shows alerting *designed and tested as code*, plus runbooks. It
 > is not production on-call experience.
@@ -216,7 +227,7 @@ before anything is built - "shift-left":
 | 5b | helm | **helm lint**, **checkov** (rendered chart), **ct lint**, **ct install** on kind | chart lint + manifest scan + real install/`helm test` under restricted PSS |
 | 5c | observability | **promtool** check/test rules, check metrics, tamper→alert demo | alert rules unit-tested; real `/metrics` output linted |
 | 6 | image | **trivy image**, **syft** | container CVE scan + SBOM |
-| 7 | publish *(main only)* | **GHCR**, **cosign**, **syft**, `attest-build-provenance`, **helm push** | push the scanned image, keyless-sign it, attach SBOM + SLSA provenance attestations; package the chart pinned to that digest, push it as an OCI artifact, sign it |
+| 7 | publish *(main only)* | **GHCR**, **cosign**, **syft**, `actions/attest`, **helm push** | push the scanned image, keyless-sign it, attach SBOM + SLSA provenance attestations; package the chart pinned to that digest, push it as an OCI artifact, sign it |
 | 8 | verify-signature *(main only)* | **cosign verify**, `gh attestation verify` | fail the run unless the image signature, SBOM, provenance and chart signature verify against this workflow's exact identity |
 
 Workflow-level `permissions: contents: read`; `concurrency` cancels superseded runs.
@@ -235,11 +246,13 @@ say *this is the image our pipeline built, from this commit*.
 - **Keyless signing.** `cosign sign` exchanges the job's GitHub OIDC token for a
   short-lived Fulcio certificate bound to the workflow identity; the signature
   is recorded in the public Rekor transparency log. No long-lived keys exist.
-- **Attestations, bound to the digest.** An SPDX SBOM (`cosign attest`) and SLSA
-  build provenance (`actions/attest-build-provenance`) are signed in-toto
-  statements whose subject is the image digest, stored next to it in GHCR.
-- **Verify gate.** `verify-signature` checks all three against the exact signer
-  identity, then runs a negative control: a foreign identity must be rejected.
+- **Attestations, bound to the digest.** An SPDX SBOM (`cosign attest`, and
+  again via `actions/attest` for GitHub's attestation store) and SLSA build
+  provenance (`actions/attest`) are signed in-toto statements whose subject is
+  the image digest, stored next to it in GHCR.
+- **Verify gate.** `verify-signature` checks the signature, both SBOM
+  attestations, the provenance and the Helm chart signature against the exact
+  signer identity, then runs a negative control: a foreign identity must be rejected.
 
 Verify it yourself (needs `cosign` and `gh`):
 
@@ -268,7 +281,9 @@ terraform/             S3 Object Lock (WORM) + KMS  -- validate-only
 deploy/helm/auditd/    hardened Helm chart (values.schema.json, helm test)
 deploy/namespace.yaml  PSS-restricted namespace (cluster policy, outside the chart)
 deploy/kind-cluster.yaml
-deploy/prometheus/     recording + alert rules, promtool unit tests
+deploy/helm/auditd/files/prometheus/  recording + alert rules (shipped as PrometheusRule)
+deploy/prometheus/tests/  promtool unit tests for those rules
+scripts/               prometheus-alert-demo.sh (real Prometheus fires the tamper alert)
 docs/runbooks/         one runbook per alert
 ct.yaml                chart-testing config
 .github/workflows/     devsecops.yml
