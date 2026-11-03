@@ -1,9 +1,8 @@
-# syntax=docker/dockerfile:1
-
 # ---- build stage -----------------------------------------------------------
-# Pinned major.minor; CI always resolves the latest patch so Go stdlib CVEs
-# stay fixed.
-FROM golang:1.27-bookworm AS build
+# Pinned by digest so the build is reproducible and a re-pushed tag cannot
+# swap the toolchain underneath us. The tag is kept for readability; Dependabot
+# (docker ecosystem) bumps the digest weekly so Go stdlib CVE fixes still land.
+FROM golang:1.27-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS build
 
 WORKDIR /src
 
@@ -28,8 +27,9 @@ RUN mkdir -p /out/data && chown 65532:65532 /out/data
 
 # ---- runtime stage -------------------------------------------------------
 # distroless/static:nonroot -> no shell, no package manager, no libc, runs as
-# uid/gid 65532. Minimal attack surface for a Trivy image scan.
-FROM gcr.io/distroless/static:nonroot
+# uid/gid 65532. Minimal attack surface for a Trivy image scan. Digest-pinned
+# for the same reason as the build stage.
+FROM gcr.io/distroless/static:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 
 COPY --from=build /out/auditd /auditd
 COPY --from=build --chown=65532:65532 /out/data /data
