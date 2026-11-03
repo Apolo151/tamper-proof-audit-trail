@@ -47,6 +47,8 @@ terraform/*.tfstate.*
 terraform/crash.log
 # Interview prep notes - personal, not part of the project
 INTERVIEW_NOTES.md
+# Personal feature roadmap / task list - not part of the project
+TODOS.md
 # Local Claude Code state
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
