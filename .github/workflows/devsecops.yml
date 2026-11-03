@@ -33,7 +33,9 @@ defaults:
 
 env:
   GO_VERSION: "1.26"
+  HELM_VERSION: v3.22.1
   IMAGE: auditd
+  CHART_DIR: deploy/helm/auditd
 
 jobs:
   # 1. Secret scanning - runs first and cheapest. A leaked credential should
@@ -124,7 +126,8 @@ jobs:
           exit-code: "1"
           severity: CRITICAL,HIGH
 
-  # 5. IaC scanning - Terraform + Kubernetes manifests + Dockerfile.
+  # 5. IaC scanning - Terraform + Dockerfile. (Kubernetes manifests are
+  #    rendered from the Helm chart and scanned in the `helm` job.)
   iac:
     needs: test
     runs-on: ubuntu-latest
@@ -139,16 +142,53 @@ jobs:
           framework: terraform
           config_file: terraform/.checkov.yaml
           soft_fail: false
-      - name: checkov (kubernetes)
-        uses: bridgecrewio/checkov-action@45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0
-        with:
-          directory: deploy/k8s/
-          framework: kubernetes
-          soft_fail: false
       - name: hadolint (Dockerfile)
         uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: Dockerfile
+
+  # 5b. Helm chart: lint it, scan the manifests it actually renders, then
+  #     install it for real on kind inside a PSS-restricted namespace. `ct
+  #     install` also runs `helm test`, so the test pod must pass admission too.
+  helm:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # ct diffs against main to find changed charts
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: helm lint
+        run: |
+          helm lint --strict "$CHART_DIR"
+          helm lint --strict "$CHART_DIR" -f "$CHART_DIR/ci/kind-values.yaml"
+      - name: render chart
+        run: helm template auditd "$CHART_DIR" --namespace audit > rendered-chart.yaml
+      - name: checkov (rendered chart)
+        uses: bridgecrewio/checkov-action@45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0
+        with:
+          file: rendered-chart.yaml
+          framework: kubernetes
+          soft_fail: false
+      - uses: helm/chart-testing-action@720270857a28afd41e2426521a7801db09e9b510 # v2.9.0
+      # Lints changed charts and fails if a changed chart did not bump its
+      # version (published versions are immutable).
+      - name: ct lint
+        run: ct lint --config ct.yaml
+      - name: build image for the kind smoke test
+        run: docker build -t auditd:local .
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: chart-testing
+      - name: load image + create the restricted namespace
+        run: |
+          kind load docker-image auditd:local --name chart-testing
+          kubectl apply -f deploy/namespace.yaml
+      - name: ct install (helm install + helm test)
+        run: ct install --config ct.yaml --all
 
   # 6. Build the image and scan it for CVEs, then publish an SBOM. Runs only
   #    after every source-level gate has passed. On main, the exact image that
@@ -198,11 +238,13 @@ jobs:
           path: auditd-image.tar
           retention-days: 1
 
-  # 7. Publish: push to GHCR, sign keyless, attach SBOM + SLSA provenance.
-  #    main only - PRs (especially from forks) never get write tokens or an
-  #    OIDC identity that could sign. This is the only job with write scopes.
+  # 7. Publish: push to GHCR, sign keyless, attach SBOM + SLSA provenance,
+  #    then package the Helm chart pinned to that digest, push it as an OCI
+  #    artifact and sign it too. main only - PRs (especially from forks) never
+  #    get write tokens or an OIDC identity that could sign. This is the only
+  #    job with write scopes.
   publish:
-    needs: image
+    needs: [image, helm]
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -213,7 +255,12 @@ jobs:
     outputs:
       image: ${{ steps.push.outputs.image }}
       digest: ${{ steps.push.outputs.digest }}
+      chart-ref: ${{ steps.chart.outputs.ref }}
+      chart-digest: ${{ steps.chart.outputs.digest }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: auditd-image
@@ -280,6 +327,44 @@ jobs:
           push-to-registry: true
           # Storage records are only supported for organization-owned repos.
           create-storage-record: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      # A chart version is released once and never overwritten. The published
+      # chart defaults to the image digest pushed and signed above, so
+      # `helm install oci://...` runs exactly that image - no tag involved.
+      - name: package + push Helm chart (OCI)
+        id: chart
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          oci="oci://ghcr.io/$owner/charts"
+          version=$(helm show chart "$CHART_DIR" | awk '$1 == "version:" {print $2}')
+          printf '%s' "$REGISTRY_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if helm show chart "$oci/auditd" --version "$version" > /dev/null 2>&1; then
+            echo "chart auditd $version already published (immutable) - bump Chart.yaml version to release a new one" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          sed -i -E "s|^  digest: \"\"|  digest: \"$IMAGE_DIGEST\"|" "$CHART_DIR/values.yaml"
+          grep -q "^  digest: \"$IMAGE_DIGEST\"" "$CHART_DIR/values.yaml"
+          helm lint --strict "$CHART_DIR"
+          helm package "$CHART_DIR" --app-version "sha-${GITHUB_SHA::7}" --destination dist
+          helm push "dist/auditd-$version.tgz" "$oci" 2>&1 | tee helm-push.log
+          digest=$(grep -oE 'sha256:[0-9a-f]{64}' helm-push.log | head -1)
+          if [[ -z "$digest" ]]; then
+            echo "::error::could not determine pushed chart digest"
+            exit 1
+          fi
+          echo "ref=ghcr.io/$owner/charts/auditd" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "pushed chart $oci/auditd:$version ($digest), image pinned to $IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+      - name: cosign sign Helm chart
+        if: steps.chart.outputs.digest != ''
+        env:
+          REF: ${{ steps.chart.outputs.ref }}@${{ steps.chart.outputs.digest }}
+        run: cosign sign --yes "$REF"
 
   # 8. Verify gate: read-only, and trusts nothing from `publish` except the
   #    digest. A signature only means something if it is checked against an
@@ -325,6 +410,16 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/devsecops.yml"
           echo "SLSA provenance OK" >> "$GITHUB_STEP_SUMMARY"
+      - name: cosign verify (Helm chart)
+        if: needs.publish.outputs.chart-digest != ''
+        env:
+          CHART_REF: ${{ needs.publish.outputs.chart-ref }}@${{ needs.publish.outputs.chart-digest }}
+        run: |
+          cosign verify \
+            --certificate-identity "$CERT_IDENTITY" \
+            --certificate-oidc-issuer "$CERT_ISSUER" \
+            "$CHART_REF" > /dev/null
+          echo "chart signature OK for $CHART_REF" >> "$GITHUB_STEP_SUMMARY"
       # Negative control: prove the gate is not a no-op. Verification against
       # a foreign identity MUST fail; if it passes, identity pinning is broken.
       - name: negative test (foreign identity must be rejected)

@@ -97,9 +97,14 @@ make run                       # DATA_DIR=./data PORT=8080
 make compose-up
 curl localhost:8080/healthz
 
-# local Kubernetes (kind)
+# local Kubernetes (kind): builds the image, installs the Helm chart into a
+# PSS-restricted namespace, then runs `helm test`
 make k8s-deploy
 kubectl -n audit port-forward svc/auditd 8080:80
+
+# or install the published, signed chart (pinned to the signed image digest)
+kubectl apply -f deploy/namespace.yaml
+helm install auditd oci://ghcr.io/apolo151/charts/auditd --version 0.1.0 -n audit
 
 # the tamper demo (offline): 3 records, edit one on disk, watch verify catch it
 make tamper-demo
@@ -130,13 +135,24 @@ make tamper-demo
 - All four Block-Public-Access switches; TLS-only + encryption-required bucket
   policies; access logging to a separate hardened bucket; lifecycle tiering.
 
-### Kubernetes layer (`deploy/k8s/`)
-- Namespace with Pod Security Standard `restricted` enforced.
+### Kubernetes layer (`deploy/helm/auditd/`)
+Shipped as a Helm chart. The hardening lives in the templates and is **not**
+configurable: `values.schema.json` rejects unknown keys (so there is no
+`securityContext` to override), pins `replicaCount` to 1 (single-writer chain),
+and validates the image digest format.
+- Namespace (`deploy/namespace.yaml`) with Pod Security Standard `restricted`
+  enforced. It's kept out of the chart on purpose: the cluster owner sets the
+  policy, and the chart has to fit it.
 - `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`,
   `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`.
 - ServiceAccount with `automountServiceAccountToken: false`.
 - Default-deny `NetworkPolicy` + a single explicit allow (ingress 8080, egress DNS).
 - Resource requests/limits; liveness/readiness/startup probes.
+- Image addressed by `repository@sha256:…` when `image.digest` is set (pull
+  policy then defaults to `Always`). The chart CI publishes is pinned to the
+  digest it signed in the same run. A `helm test` pod (itself PSS-restricted)
+  probes `/readyz` through the Service using the auditd binary, so the test
+  adds no extra image.
 
 ### Pipeline layer (`.github/workflows/devsecops.yml`)
 
@@ -149,10 +165,11 @@ before anything is built - "shift-left":
 | 2 | sast | **go vet**, **staticcheck**, **gosec** | SAST |
 | 3 | test | `go test -race -cover` | dynamic / correctness |
 | 4 | sca | **govulncheck**, **trivy fs** | dependency / SCA scanning |
-| 5 | iac | **checkov** (tf + k8s), **hadolint** | IaC scanning |
+| 5 | iac | **checkov** (terraform), **hadolint** | IaC scanning |
+| 5b | helm | **helm lint**, **checkov** (rendered chart), **ct lint**, **ct install** on kind | chart lint + manifest scan + real install/`helm test` under restricted PSS |
 | 6 | image | **trivy image**, **syft** | container CVE scan + SBOM |
-| 7 | publish *(main only)* | **GHCR**, **cosign**, **syft**, `attest-build-provenance` | push the scanned image, keyless-sign it, attach SBOM + SLSA provenance attestations |
-| 8 | verify-signature *(main only)* | **cosign verify**, `gh attestation verify` | fail the run unless signature, SBOM and provenance verify against this workflow's exact identity |
+| 7 | publish *(main only)* | **GHCR**, **cosign**, **syft**, `attest-build-provenance`, **helm push** | push the scanned image, keyless-sign it, attach SBOM + SLSA provenance attestations; package the chart pinned to that digest, push it as an OCI artifact, sign it |
+| 8 | verify-signature *(main only)* | **cosign verify**, `gh attestation verify` | fail the run unless the image signature, SBOM, provenance and chart signature verify against this workflow's exact identity |
 
 Workflow-level `permissions: contents: read`; `concurrency` cancels superseded runs.
 Only `publish` gets write scopes (`packages`, `id-token`, `attestations`), and
@@ -198,7 +215,10 @@ internal/config/       env config + validation
 internal/audit/        event.go chain.go store.go verify.go   (the hash chain)
 internal/httpapi/      handlers, middleware, server
 terraform/             S3 Object Lock (WORM) + KMS  -- validate-only
-deploy/k8s/            hardened manifests + kind-cluster.yaml
+deploy/helm/auditd/    hardened Helm chart (values.schema.json, helm test)
+deploy/namespace.yaml  PSS-restricted namespace (cluster policy, outside the chart)
+deploy/kind-cluster.yaml
+ct.yaml                chart-testing config
 .github/workflows/     devsecops.yml
 ```
 
