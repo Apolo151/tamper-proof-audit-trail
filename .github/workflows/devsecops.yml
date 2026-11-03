@@ -245,14 +245,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Plain single-manifest image on the default builder. BuildKit's own
+      # (unsigned) provenance/SBOM attestations are disabled: the signed ones
+      # are attached in `publish`. With the runner's containerd image store,
+      # leaving them on wraps the image in an OCI index carrying an
+      # unknown/unknown attestation manifest, which GHCR rejected on push
+      # ("denied") after accepting every layer.
       - name: build image
         id: build
-        env:
-          DOCKER_BUILDKIT: "1"
         run: |
-          docker build -t "$IMAGE:$GITHUB_SHA" .
+          docker build --provenance=false --sbom=false -t "$IMAGE:$GITHUB_SHA" .
           echo "image-id=$(docker inspect --format '{{.Id}}' "$IMAGE:$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+      # Runs on PRs too, so a regression is caught before it reaches publish.
+      - name: assert plain single-manifest image
+        run: |
+          docker save "$IMAGE:$GITHUB_SHA" -o image-check.tar
+          tar -xf image-check.tar index.json
+          jq -e '(.manifests | length) == 1
+                 and .manifests[0].mediaType == "application/vnd.oci.image.manifest.v1+json"' index.json \
+            || { echo "::error::image is not a single plain manifest:"; jq . index.json; exit 1; }
+          rm -f image-check.tar index.json
       - name: trivy image scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
