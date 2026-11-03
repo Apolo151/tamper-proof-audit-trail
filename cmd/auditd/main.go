@@ -5,6 +5,8 @@
 //	auditd                 run the HTTP server (default)
 //	auditd -verify         replay DATA_DIR, print the verification result, exit 0/1
 //	auditd -healthcheck    probe a running server's /healthz, exit 0/1 (container HEALTHCHECK)
+//	auditd -healthcheck -healthcheck-url URL
+//	                       probe URL instead (the Helm test pod checks the Service)
 package main
 
 import (
@@ -16,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,8 +31,9 @@ import (
 
 func main() {
 	var (
-		doVerify      = flag.Bool("verify", false, "replay DATA_DIR, print verification result, exit non-zero if broken")
-		doHealthcheck = flag.Bool("healthcheck", false, "probe http://127.0.0.1:$PORT/healthz and exit 0/1")
+		doVerify       = flag.Bool("verify", false, "replay DATA_DIR, print verification result, exit non-zero if broken")
+		doHealthcheck  = flag.Bool("healthcheck", false, "probe http://127.0.0.1:$PORT/healthz and exit 0/1")
+		healthcheckURL = flag.String("healthcheck-url", "", "with -healthcheck: probe this http(s) URL instead of the local /healthz")
 	)
 	flag.Parse()
 
@@ -40,6 +44,8 @@ func main() {
 	}
 
 	switch {
+	case *doHealthcheck && *healthcheckURL != "":
+		os.Exit(probe(*healthcheckURL))
 	case *doHealthcheck:
 		os.Exit(healthcheck(cfg.Port))
 	case *doVerify:
@@ -121,10 +127,20 @@ func verifyDir(dir string) int {
 	return 1
 }
 
+// healthcheck probes the local server: the container HEALTHCHECK self-probe.
 func healthcheck(port string) int {
+	return probe("http://127.0.0.1:" + port + "/healthz")
+}
+
+// probe GETs target and returns 0 on HTTP 200, 1 otherwise.
+func probe(target string) int {
+	u, err := url.Parse(target)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		fmt.Fprintf(os.Stderr, "invalid probe URL %q\n", target)
+		return 1
+	}
 	client := &http.Client{Timeout: 2 * time.Second}
-	url := "http://127.0.0.1:" + port + "/healthz"
-	resp, err := client.Get(url) // #nosec G107 -- fixed localhost URL, container self-probe
+	resp, err := client.Get(u.String()) // #nosec G107 -- fixed localhost URL or an operator-supplied CLI flag, scheme-checked above
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -132,7 +148,7 @@ func healthcheck(port string) int {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "healthz returned %d\n", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "%s returned %d\n", u.Path, resp.StatusCode)
 		return 1
 	}
 	return 0
