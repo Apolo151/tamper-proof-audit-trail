@@ -18,7 +18,9 @@ Kubernetes manifests, and a shift-left GitHub Actions security pipeline.
 | `internal/httpapi/` | HTTP handlers, middleware, server setup |
 | `internal/metrics/` | stdlib-only Prometheus text-format registry (counter/gauge/histogram) |
 | `internal/telemetry/` | auditd's metric set + background on-disk chain verifier |
-| `deploy/prometheus/` | recording + alert rules, `tests/alerts_test.yaml` (promtool) |
+| `deploy/helm/auditd/files/prometheus/` | recording + alert rules: the only copy, shipped as a PrometheusRule |
+| `deploy/prometheus/tests/` | promtool unit tests for those rules |
+| `scripts/prometheus-alert-demo.sh` | real Prometheus + live auditd: tamper -> alert firing |
 | `docs/runbooks/` | one runbook per alert (linked via `runbook_url`) |
 | `terraform/` | S3 (Object Lock/WORM) + KMS, Checkov-clean, **validate-only** |
 | `deploy/helm/auditd/` | hardened Helm chart; `ci/kind-values.yaml` for kind / `ct install` |
@@ -61,7 +63,8 @@ Each `make scan-*` target needs its tool on `PATH`
 - `-trimpath` is a `go build` flag, **not** an ldflag.
 - Terraform is **validate + Checkov only** - never `apply` (no real AWS account).
 - Keep the Deployment at **`replicas: 1`**: the chain is a single-writer log on
-  an `emptyDir`. Multi-replica needs a StatefulSet + RWO PVC or a shared store.
+  an `emptyDir` (or a RWO PVC with `persistence.enabled`). Multi-replica needs a
+  shared store.
   `values.schema.json` enforces it (`const: 1`).
 - Helm: security contexts are template helpers, deliberately **not** values. The
   schema has `additionalProperties: false`, so every new value needs a schema entry.
@@ -75,7 +78,10 @@ Each `make scan-*` target needs its tool on `PATH`
 - Metrics labels must stay bounded: route = `r.Pattern` (`unmatched` if empty),
   never the raw path or any request field.
 - `/metrics` is on `METRICS_PORT` (9090), a separate listener. Every metric
-  name/label change must be mirrored in `deploy/prometheus/` + its promtool tests.
+  name/label change must be mirrored in the chart's `files/prometheus/` rules + their promtool tests.
+- The PVC carries `helm.sh/resource-policy: keep`: `helm uninstall` leaves audit history behind on purpose.
+- Dockerfile: `ARG TARGETOS`/`TARGETARCH` must have **no defaults**, or a default overrides
+  BuildKit's value and every `--platform` builds the host arch.
 - `make test-rules` / `check-metrics` need `promtool` on PATH (Prometheus release tarball).
 - The hash pre-image hashes the client's **compacted raw metadata bytes**, not a
   re-marshalled map - don't "normalise" metadata through `map[string]any`.
