@@ -257,12 +257,17 @@ jobs:
           docker build --provenance=false --sbom=false -t "$IMAGE:$GITHUB_SHA" .
           echo "image-id=$(docker inspect --format '{{.Id}}' "$IMAGE:$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
       # Runs on PRs too, so a regression is caught before it reaches publish.
+      # The tarball's own index.json always lists the saved images; it must
+      # reference exactly one image manifest (OCI or Docker v2), not a nested
+      # index that could carry attestation manifests.
       - name: assert plain single-manifest image
         run: |
           docker save "$IMAGE:$GITHUB_SHA" -o image-check.tar
           tar -xf image-check.tar index.json
           jq -e '(.manifests | length) == 1
-                 and .manifests[0].mediaType == "application/vnd.oci.image.manifest.v1+json"' index.json \
+                 and (.manifests[0].mediaType | IN(
+                       "application/vnd.oci.image.manifest.v1+json",
+                       "application/vnd.docker.distribution.manifest.v2+json"))' index.json \
             || { echo "::error::image is not a single plain manifest:"; jq . index.json; exit 1; }
           rm -f image-check.tar index.json
       - name: trivy image scan
