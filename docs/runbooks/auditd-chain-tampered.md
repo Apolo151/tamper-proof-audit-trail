@@ -2,8 +2,10 @@
 
 **Severity:** critical · **Team:** security + on-call · **Fires:** immediately (no `for:`)
 
-> **Do not restart, redeploy, scale or `helm upgrade` auditd.** The chain lives on
-> an `emptyDir`; a new pod starts with an empty log and the evidence is gone.
+> **Do not restart, redeploy, scale or `helm upgrade` auditd.** With the default
+> `persistence.enabled=false` the chain lives on an `emptyDir`: a new pod starts
+> with an empty log and the evidence is gone. Even with a PVC, preserve a copy
+> first; nothing should touch the volume until it's captured.
 
 ## Meaning
 `auditd_chain_intact == 0`: the background verifier re-read `audit.log.jsonl`

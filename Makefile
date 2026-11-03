@@ -9,7 +9,7 @@ KIND_NAME  := audit
 CHART      := deploy/helm/auditd
 NAMESPACE  := audit
 RENDERED   := bin/rendered-chart.yaml
-PROM_RULES := deploy/prometheus
+PROM_RULES := deploy/helm/auditd/files/prometheus
 
 GOFLAGS_BUILD := -trimpath -ldflags="-w -s"
 
@@ -139,7 +139,7 @@ check-rules: ## promtool check rules (syntax + PromQL)
 
 .PHONY: test-rules
 test-rules: check-rules ## promtool unit tests for every alert (fires / must-not-fire)
-	promtool test rules $(PROM_RULES)/tests/alerts_test.yaml
+	promtool test rules deploy/prometheus/tests/alerts_test.yaml
 
 .PHONY: check-metrics
 check-metrics: build ## Run the binary and lint its /metrics output with promtool
@@ -170,6 +170,10 @@ tamper-alert-demo: build ## Live server: edit the log on disk, watch auditd_chai
 	else \
 	  echo "FAIL: tampering not reflected in metrics"; exit 1; \
 	fi
+
+.PHONY: prometheus-alert-demo
+prometheus-alert-demo: build ## Real Prometheus + rules: watch AuditdChainTampered go inactive -> firing
+	scripts/prometheus-alert-demo.sh $(BIN)
 
 ## --- demos ----------------------------------------------------------
 

@@ -3,9 +3,11 @@
 # Each scenario feeds synthetic series and asserts which alerts fire (and,
 # just as important, which must NOT fire) at given evaluation times.
 # Series notation: 'a+bxN' = start at a, add b each interval, N more samples.
+# The rules live in the Helm chart (single source of truth: the chart ships
+# them as a PrometheusRule); these tests run against those exact files.
 rule_files:
-  - ../recording-rules.yaml
-  - ../alerts.yaml
+  - ../../helm/auditd/files/prometheus/recording-rules.yaml
+  - ../../helm/auditd/files/prometheus/alerts.yaml
 
 evaluation_interval: 1m
 
@@ -141,8 +143,8 @@ tests:
               description: >-
                 The on-disk audit chain no longer verifies; auditd_chain_broken_seq
                 holds the first broken record. Treat as a security incident. DO NOT
-                restart or redeploy the pod - the chain lives on an emptyDir and the
-                evidence would be destroyed.
+                restart or redeploy the pod - without a PVC the chain is on an
+                emptyDir and the evidence would be destroyed.
               runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-chain-tampered.md
 
   # --- 6. Verifier stalls: timestamp stops advancing -------------------------
@@ -216,3 +218,58 @@ tests:
                 removed from service discovery (deleted Deployment, label change,
                 NetworkPolicy or ServiceMonitor misconfiguration).
               runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-target-down.md
+
+  # --- 8. Latency: 20% of writes slower than 250ms -> both latency pages -----
+  - interval: 1m
+    input_series:
+      - series: 'auditd_http_request_duration_seconds_bucket{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",le="0.25"}'
+        values: '0+80x120'
+      - series: 'auditd_http_request_duration_seconds_count{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST"}'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: AuditdLatencyBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              severity: page
+              slo: latency
+            exp_annotations:
+              summary: auditd writes are too slow - latency budget burning 14.4x too fast
+              description: >-
+                20% of audit writes took longer than 250ms over the last 5m
+                (over 1h the rate is above 14.4%). The SLO allows 1%.
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-latency-budget-burn.md
+      - eval_time: 70m
+        alertname: AuditdLatencyBudgetBurnSlow
+        exp_alerts:
+          - exp_labels:
+              job: auditd
+              severity: page
+              slo: latency
+            exp_annotations:
+              summary: auditd writes are too slow - latency budget burning 6x too fast
+              description: >-
+                More than 6% of audit writes took longer than 250ms over both 6h
+                and 30m. The SLO allows 1%.
+              runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-latency-budget-burn.md
+
+  # --- 9. Latency healthy: 0.5% slow (inside the 1% budget) - silent --------
+  # Slow *reads* (GET) are outside this SLI and must not page either.
+  - interval: 1m
+    input_series:
+      - series: 'auditd_http_request_duration_seconds_bucket{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST",le="0.25"}'
+        values: '0+995x400'
+      - series: 'auditd_http_request_duration_seconds_count{job="auditd",instance="a:9090",route="POST /api/v1/audit",method="POST"}'
+        values: '0+1000x400'
+      - series: 'auditd_http_request_duration_seconds_bucket{job="auditd",instance="a:9090",route="GET /api/v1/audit",method="GET",le="0.25"}'
+        values: '0+1x400'
+      - series: 'auditd_http_request_duration_seconds_count{job="auditd",instance="a:9090",route="GET /api/v1/audit",method="GET"}'
+        values: '0+100x400'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: AuditdLatencyBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 6h
+        alertname: AuditdLatencyBudgetBurnSlow
+        exp_alerts: []
