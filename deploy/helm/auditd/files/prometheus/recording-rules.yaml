@@ -1,0 +1,74 @@
+# SLI recording rules for auditd. These files are the single source of truth:
+# the Helm chart ships them as a PrometheusRule (metrics.prometheusRule) and
+# deploy/prometheus/tests/ unit-tests them with promtool.
+#
+# SLI (availability): the share of API requests (/api/v1/audit*) that did NOT
+# fail server-side. Errors are 5xx only - a 4xx is the client's fault and does
+# not burn the budget. Health probes are excluded: they are not user traffic.
+#
+# One ratio per alerting window, precomputed so the burn-rate alerts stay cheap
+# and readable. `sum by (job)` keeps the job label for routing.
+groups:
+  - name: auditd-sli
+    interval: 30s
+    rules:
+      - record: auditd:sli_errors:ratio_rate5m
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[5m]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[5m]))
+      - record: auditd:sli_errors:ratio_rate30m
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[30m]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[30m]))
+      - record: auditd:sli_errors:ratio_rate1h
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[1h]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[1h]))
+      - record: auditd:sli_errors:ratio_rate6h
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[6h]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[6h]))
+      - record: auditd:sli_errors:ratio_rate3d
+        expr: |
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*", code=~"5.."}[3d]))
+          /
+          sum by (job) (rate(auditd_http_requests_total{job="auditd", route=~".*/api/v1/audit.*"}[3d]))
+
+  # SLI (latency): the share of writes (POST /api/v1/audit - the path callers
+  # block on) that took longer than 250ms. Uses the histogram's le="0.25"
+  # bucket, so it aggregates correctly across instances.
+  - name: auditd-sli-latency
+    interval: 30s
+    rules:
+      - record: auditd:sli_latency_slow:ratio_rate5m
+        expr: |
+          1 - (
+            sum by (job) (rate(auditd_http_request_duration_seconds_bucket{job="auditd", route="POST /api/v1/audit", le="0.25"}[5m]))
+            /
+            sum by (job) (rate(auditd_http_request_duration_seconds_count{job="auditd", route="POST /api/v1/audit"}[5m]))
+          )
+      - record: auditd:sli_latency_slow:ratio_rate30m
+        expr: |
+          1 - (
+            sum by (job) (rate(auditd_http_request_duration_seconds_bucket{job="auditd", route="POST /api/v1/audit", le="0.25"}[30m]))
+            /
+            sum by (job) (rate(auditd_http_request_duration_seconds_count{job="auditd", route="POST /api/v1/audit"}[30m]))
+          )
+      - record: auditd:sli_latency_slow:ratio_rate1h
+        expr: |
+          1 - (
+            sum by (job) (rate(auditd_http_request_duration_seconds_bucket{job="auditd", route="POST /api/v1/audit", le="0.25"}[1h]))
+            /
+            sum by (job) (rate(auditd_http_request_duration_seconds_count{job="auditd", route="POST /api/v1/audit"}[1h]))
+          )
+      - record: auditd:sli_latency_slow:ratio_rate6h
+        expr: |
+          1 - (
+            sum by (job) (rate(auditd_http_request_duration_seconds_bucket{job="auditd", route="POST /api/v1/audit", le="0.25"}[6h]))
+            /
+            sum by (job) (rate(auditd_http_request_duration_seconds_count{job="auditd", route="POST /api/v1/audit"}[6h]))
+          )

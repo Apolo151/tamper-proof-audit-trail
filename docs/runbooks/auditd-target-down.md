@@ -31,7 +31,7 @@ kubectl -n $NS port-forward deploy/auditd 8080:8080 & curl -s localhost:8080/rea
 - ServiceMonitor: enable it (`metrics.serviceMonitor.enabled=true`) and match your
   Prometheus' `serviceMonitorSelector` labels via `metrics.serviceMonitor.labels`.
 - Pod down: follow the pod's events and logs. Remember a restart starts a fresh chain
-  (emptyDir). Check that `AuditdChainTampered` was not firing before the outage.
+  (unless `persistence.enabled`). Check that `AuditdChainTampered` was not firing before the outage.
 
 ## Escalate
 Escalate to the platform/monitoring team if Prometheus itself is unhealthy

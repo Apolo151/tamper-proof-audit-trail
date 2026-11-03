@@ -62,6 +62,43 @@ groups:
             urgent, but the SLO will be missed if this continues.
           runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-error-budget-burn.md
 
+  # Latency SLO: 99% of writes complete within 250ms over 30 days
+  # (error budget 1%). Same multi-window pattern as availability.
+  - name: auditd-slo-latency
+    rules:
+      - alert: AuditdLatencyBudgetBurnFast
+        expr: |
+          auditd:sli_latency_slow:ratio_rate1h > (14.4 * 0.01)
+          and
+          auditd:sli_latency_slow:ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: page
+          slo: latency
+        annotations:
+          summary: auditd writes are too slow - latency budget burning 14.4x too fast
+          description: >-
+            {{ $value | humanizePercentage }} of audit writes took longer than
+            250ms over the last 5m (over 1h the rate is above 14.4%). The SLO
+            allows 1%.
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-latency-budget-burn.md
+
+      - alert: AuditdLatencyBudgetBurnSlow
+        expr: |
+          auditd:sli_latency_slow:ratio_rate6h > (6 * 0.01)
+          and
+          auditd:sli_latency_slow:ratio_rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: page
+          slo: latency
+        annotations:
+          summary: auditd writes are too slow - latency budget burning 6x too fast
+          description: >-
+            More than 6% of audit writes took longer than 250ms over both 6h
+            and 30m. The SLO allows 1%.
+          runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-latency-budget-burn.md
+
   - name: auditd-integrity
     rules:
       # A security incident, not an availability one: it fires immediately
@@ -75,8 +112,9 @@ groups:
           summary: "auditd hash chain is broken on {{ $labels.instance }} - possible tampering"
           description: >-
             The on-disk audit chain no longer verifies; auditd_chain_broken_seq
-            holds the first broken record. Treat as a security incident. DO NOT restart or redeploy the pod -
-            the chain lives on an emptyDir and the evidence would be destroyed.
+            holds the first broken record. Treat as a security incident. DO NOT
+            restart or redeploy the pod - without a PVC the chain is on an
+            emptyDir and the evidence would be destroyed.
           runbook_url: https://github.com/Apolo151/tamper-proof-audit-trail/blob/main/docs/runbooks/auditd-chain-tampered.md
 
       # Guards the guard: if the verifier stops running, AuditdChainTampered

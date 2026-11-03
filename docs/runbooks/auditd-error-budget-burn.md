@@ -43,8 +43,8 @@ kubectl -n $NS logs deploy/auditd | grep -E '"level":"(ERROR|WARN)"' | tail -20
 ## Mitigate
 | Cause | Action |
 |-------|--------|
-| `append failed` / fsync errors, disk full | The emptyDir sits on node disk, so check node disk pressure (`kubectl describe node`). Free space or cordon/drain the node. **Restarting wipes the chain.** Only do it if you accept losing local history, and record that decision. |
-| `panic recovered` after a deploy | `helm rollback auditd <prev-rev> -n audit` (same caveat: Recreate + emptyDir) |
+| `append failed` / fsync errors, disk full | emptyDir (default): it sits on node disk, so check node disk pressure (`kubectl describe node`). PVC: check the volume's capacity, and expand it or raise `persistence.size`. **Without a PVC, restarting wipes the chain.** Only do it if you accept losing local history, and record that decision. |
+| `panic recovered` after a deploy | `helm rollback auditd <prev-rev> -n audit` (same caveat without `persistence.enabled`: Recreate + emptyDir) |
 | CPU throttling / latency (limit 250m) | Raise `resources.limits.cpu` via values and upgrade |
 | `AuditdChainTampered` also firing | Stop. Follow [the tampered runbook](auditd-chain-tampered.md) instead, and do not restart. |
 
