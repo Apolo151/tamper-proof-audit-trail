@@ -281,3 +281,45 @@ func TestStatusRecorderDefaultsTo200(t *testing.T) {
 		t.Fatalf("code() = %d, want 418", got)
 	}
 }
+
+func TestListPagination(t *testing.T) {
+	h, store := newTestAPI(t)
+	for i := 0; i < 120; i++ {
+		if _, err := store.Append(audit.Event{Actor: "a", Action: "x", Resource: "y"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tests := []struct {
+		name                    string
+		query                   string
+		wantLen, wantLimit      int
+		wantOffset              int
+		wantFirstSeq, wantCount uint64
+	}{
+		{"default page", "", 100, 100, 0, 1, 120},
+		{"explicit page", "?limit=10&offset=5", 10, 10, 5, 6, 120},
+		{"tail shorter than limit", "?limit=50&offset=100", 20, 50, 100, 101, 120},
+		{"limit capped", "?limit=100000", 120, 1000, 0, 1, 120},
+		{"offset past end", "?offset=500", 0, 100, 120, 0, 120},
+		{"garbage falls back to defaults", "?limit=lots&offset=-3", 100, 100, 0, 1, 120},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr := do(t, h, "GET", "/api/v1/audit"+tt.query, "")
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d", rr.Code)
+			}
+			var lr listResponse
+			if err := json.Unmarshal(rr.Body.Bytes(), &lr); err != nil {
+				t.Fatal(err)
+			}
+			if len(lr.Records) != tt.wantLen || lr.Limit != tt.wantLimit || lr.Offset != tt.wantOffset || uint64(lr.Count) != tt.wantCount {
+				t.Fatalf("got len=%d limit=%d offset=%d count=%d, want %d/%d/%d/%d",
+					len(lr.Records), lr.Limit, lr.Offset, lr.Count, tt.wantLen, tt.wantLimit, tt.wantOffset, tt.wantCount)
+			}
+			if tt.wantLen > 0 && lr.Records[0].Seq != tt.wantFirstSeq {
+				t.Errorf("first seq = %d, want %d", lr.Records[0].Seq, tt.wantFirstSeq)
+			}
+		})
+	}
+}
