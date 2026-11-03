@@ -38,7 +38,8 @@ USER 65532:65532
 ENV DATA_DIR=/data \
     PORT=8080 \
     LOG_LEVEL=info
-EXPOSE 8080
+# 8080 = API, 9090 = /metrics (separate listener, scraper-only)
+EXPOSE 8080 9090
 VOLUME ["/data"]
 
 # The binary probes itself (exec form, no shell). Kubernetes uses its own

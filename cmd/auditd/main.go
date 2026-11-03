@@ -27,6 +27,7 @@ import (
 	"github.com/Apolo151/tamper-proof-audit-trail/internal/audit"
 	"github.com/Apolo151/tamper-proof-audit-trail/internal/config"
 	"github.com/Apolo151/tamper-proof-audit-trail/internal/httpapi"
+	"github.com/Apolo151/tamper-proof-audit-trail/internal/telemetry"
 )
 
 func main() {
@@ -74,21 +75,37 @@ func runServer(cfg config.Config) int {
 		}
 	}()
 
-	handler := httpapi.NewHandler(store, logger, cfg.MaxBodyBytes)
+	tel := telemetry.New()
+	// Verify once before serving, so the first scrape never reads the zero
+	// value of auditd_chain_intact (which would look like tampering).
+	tel.VerifyChain(store, time.Now(), logger)
+
+	handler := httpapi.NewHandler(store, logger, cfg.MaxBodyBytes, tel)
 	srv := httpapi.NewServer(httpapi.JoinHostPort(cfg.Port), handler, cfg.ReadHeaderTimeout)
+	// /metrics lives on its own port: it stays off the API (and any ingress in
+	// front of it), a NetworkPolicy can admit only the scraper, and scrapes do
+	// not flood the request log.
+	metricsSrv := httpapi.NewServer(httpapi.JoinHostPort(cfg.MetricsPort), httpapi.NewMetricsHandler(tel), cfg.ReadHeaderTimeout)
+	servers := []*http.Server{srv, metricsSrv}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("audit service listening",
-			slog.String("addr", srv.Addr),
-			slog.String("data_dir", cfg.DataDir))
-		if serveErr := srv.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			errCh <- serveErr
-		}
-	}()
+	go tel.RunChainVerifier(ctx, store, cfg.VerifyInterval, logger)
+
+	errCh := make(chan error, len(servers))
+	for _, s := range servers {
+		go func() {
+			if serveErr := s.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				errCh <- serveErr
+			}
+		}()
+	}
+	logger.Info("audit service listening",
+		slog.String("addr", srv.Addr),
+		slog.String("metrics_addr", metricsSrv.Addr),
+		slog.String("data_dir", cfg.DataDir),
+		slog.Duration("verify_interval", cfg.VerifyInterval))
 
 	select {
 	case serveErr := <-errCh:
@@ -100,12 +117,17 @@ func runServer(cfg config.Config) int {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("graceful shutdown failed", slog.String("error", err.Error()))
-		return 1
+	code := 0
+	for _, s := range servers {
+		if err := s.Shutdown(shutdownCtx); err != nil {
+			logger.Error("graceful shutdown failed", slog.String("addr", s.Addr), slog.String("error", err.Error()))
+			code = 1
+		}
 	}
-	logger.Info("shutdown complete")
-	return 0
+	if code == 0 {
+		logger.Info("shutdown complete")
+	}
+	return code
 }
 
 func verifyDir(dir string) int {

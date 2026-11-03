@@ -9,7 +9,7 @@ import (
 func TestLoadDefaults(t *testing.T) {
 	// t.Setenv guarantees the env is restored after the test and forbids
 	// t.Parallel, so these tests stay isolated.
-	for _, k := range []string{"PORT", "DATA_DIR", "LOG_LEVEL", "SHUTDOWN_TIMEOUT", "READ_HEADER_TIMEOUT", "MAX_BODY_BYTES"} {
+	for _, k := range []string{"PORT", "DATA_DIR", "LOG_LEVEL", "SHUTDOWN_TIMEOUT", "READ_HEADER_TIMEOUT", "MAX_BODY_BYTES", "METRICS_PORT", "VERIFY_INTERVAL"} {
 		t.Setenv(k, "")
 	}
 
@@ -32,10 +32,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaxBodyBytes != 64*1024 {
 		t.Errorf("MaxBodyBytes = %d, want 65536", cfg.MaxBodyBytes)
 	}
+	if cfg.MetricsPort != "9090" {
+		t.Errorf("MetricsPort = %q, want 9090", cfg.MetricsPort)
+	}
+	if cfg.VerifyInterval != time.Minute {
+		t.Errorf("VerifyInterval = %v, want 1m", cfg.VerifyInterval)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
 	t.Setenv("PORT", "9090")
+	t.Setenv("METRICS_PORT", "9100")
+	t.Setenv("VERIFY_INTERVAL", "15s")
 	t.Setenv("DATA_DIR", "/var/lib/audit/")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("SHUTDOWN_TIMEOUT", "30s")
@@ -64,6 +72,12 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.MaxBodyBytes != 1024 {
 		t.Errorf("MaxBodyBytes = %d, want 1024", cfg.MaxBodyBytes)
 	}
+	if cfg.MetricsPort != "9100" {
+		t.Errorf("MetricsPort = %q, want 9100", cfg.MetricsPort)
+	}
+	if cfg.VerifyInterval != 15*time.Second {
+		t.Errorf("VerifyInterval = %v, want 15s", cfg.VerifyInterval)
+	}
 }
 
 func TestLoadInvalid(t *testing.T) {
@@ -77,6 +91,10 @@ func TestLoadInvalid(t *testing.T) {
 		{"bad duration", map[string]string{"SHUTDOWN_TIMEOUT": "soon"}},
 		{"bad int", map[string]string{"MAX_BODY_BYTES": "big"}},
 		{"empty data dir", map[string]string{"DATA_DIR": "."}},
+		{"bad metrics port", map[string]string{"METRICS_PORT": "0"}},
+		{"metrics port clashes with api port", map[string]string{"PORT": "8080", "METRICS_PORT": "8080"}},
+		{"bad verify interval", map[string]string{"VERIFY_INTERVAL": "often"}},
+		{"verify interval too short", map[string]string{"VERIFY_INTERVAL": "100ms"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
