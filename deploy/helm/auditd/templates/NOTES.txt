@@ -1,0 +1,16 @@
+auditd {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+Image: {{ include "auditd.image" . }}
+{{- if not .Values.image.digest }}
+  (addressed by tag - set image.digest to pin the signed sha256 digest)
+{{- end }}
+
+Talk to it:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "auditd.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -s localhost:8080/api/v1/audit/verify
+
+Smoke test:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+The namespace should enforce the restricted Pod Security Standard
+(see deploy/namespace.yaml); every pod in this chart is built to pass it.

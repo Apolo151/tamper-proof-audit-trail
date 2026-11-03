@@ -1,0 +1,16 @@
+# chart-testing (ct) config, used by the `helm` CI job.
+#   ct lint    - helm lint + yamllint + Chart.yaml schema + version-bump check
+#   ct install - real install on kind, then `helm test`, using ci/*-values.yaml
+target-branch: main
+chart-dirs:
+  - deploy/helm
+# A changed chart must bump its version vs. main: published versions are immutable.
+check-version-increment: true
+# Maintainer names are checked against the GitHub API otherwise; skip the
+# network call (and its rate limit) - Chart.yaml lists a single owner.
+validate-maintainers: false
+# Install into the pre-created, PSS-restricted namespace so the test proves
+# every pod (including the helm test pod) is admitted under `restricted`.
+namespace: audit
+release-label: app.kubernetes.io/instance
+helm-extra-args: --timeout 180s
