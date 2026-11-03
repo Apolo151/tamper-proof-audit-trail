@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Apolo151/tamper-proof-audit-trail/internal/audit"
+	"github.com/Apolo151/tamper-proof-audit-trail/internal/telemetry"
 )
 
 // Store is the subset of *audit.Store the HTTP layer depends on. Defining it
@@ -17,6 +19,7 @@ import (
 type Store interface {
 	Append(audit.Event) (audit.Record, error)
 	List() []audit.Record
+	VerifyDisk() audit.VerifyResult
 	Ready() error
 }
 
@@ -24,11 +27,12 @@ type api struct {
 	store   Store
 	log     *slog.Logger
 	maxBody int64
+	tel     *telemetry.Telemetry
 }
 
 // NewHandler builds the fully-wrapped HTTP handler for the audit service.
-func NewHandler(store Store, logger *slog.Logger, maxBodyBytes int64) http.Handler {
-	a := &api{store: store, log: logger, maxBody: maxBodyBytes}
+func NewHandler(store Store, logger *slog.Logger, maxBodyBytes int64, tel *telemetry.Telemetry) http.Handler {
+	a := &api{store: store, log: logger, maxBody: maxBodyBytes, tel: tel}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/audit", a.handleAppend)
@@ -37,7 +41,7 @@ func NewHandler(store Store, logger *slog.Logger, maxBodyBytes int64) http.Handl
 	mux.HandleFunc("GET /healthz", a.handleHealthz)
 	mux.HandleFunc("GET /readyz", a.handleReadyz)
 
-	return withMiddleware(mux, logger)
+	return withMiddleware(mux, logger, tel)
 }
 
 func (a *api) handleAppend(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +73,9 @@ func (a *api) handleAppend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now()
 	rec, err := a.store.Append(ev)
+	a.tel.ObserveAppend(time.Since(start), err)
 	if err != nil {
 		a.log.Error("append failed", slog.String("error", err.Error()))
 		writeError(w, http.StatusInternalServerError, "could not persist audit event")
@@ -99,7 +105,9 @@ func (a *api) handleList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleVerify(w http.ResponseWriter, r *http.Request) {
-	res := audit.Verify(a.store.List())
+	// Verify what is on disk, not the in-memory copy: memory only changes via
+	// Append, so it can never show tampering with the file itself.
+	res := a.store.VerifyDisk()
 	// Always 200: the verify endpoint always succeeds; the body says whether the
 	// chain is intact. Callers that want a non-2xx on tampering pass ?strict=1.
 	status := http.StatusOK

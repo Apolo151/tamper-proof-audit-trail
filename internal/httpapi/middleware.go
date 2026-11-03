@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"github.com/Apolo151/tamper-proof-audit-trail/internal/telemetry"
 )
 
 // statusRecorder captures the status code and byte count written to the client
@@ -20,6 +22,15 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// code is the status the client received: net/http sends 200 when a handler
+// writes nothing at all, so an unset status means 200, not 0.
+func (r *statusRecorder) code() int {
+	if r.status == 0 {
+		return http.StatusOK
+	}
+	return r.status
+}
+
 func (r *statusRecorder) Write(b []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
@@ -29,10 +40,25 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// withMiddleware wraps h with, from outside in: panic recovery, structured
-// request logging, and a couple of always-on security headers.
-func withMiddleware(h http.Handler, logger *slog.Logger) http.Handler {
-	return recoverPanic(requestLogger(securityHeaders(h), logger), logger)
+// withMiddleware wraps h with, from outside in: metrics, panic recovery,
+// structured request logging, and a couple of always-on security headers.
+// Metrics sit outside recovery so a recovered panic is counted as the 500 the
+// client actually received.
+func withMiddleware(h http.Handler, logger *slog.Logger, tel *telemetry.Telemetry) http.Handler {
+	return instrument(recoverPanic(requestLogger(securityHeaders(h), logger), logger), tel)
+}
+
+// instrument records request count and latency. The route label is the
+// ServeMux pattern (e.g. "POST /api/v1/audit"), which the mux sets on the
+// shared *http.Request while routing; requests that match no pattern get a
+// single "unmatched" label, so arbitrary paths cannot create new series.
+func instrument(next http.Handler, tel *telemetry.Telemetry) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		tel.ObserveRequest(r.Pattern, r.Method, rec.code(), time.Since(start))
+	})
 }
 
 func securityHeaders(next http.Handler) http.Handler {
@@ -51,7 +77,7 @@ func requestLogger(next http.Handler, logger *slog.Logger) http.Handler {
 		logger.Info("http request",
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
-			slog.Int("status", rec.status),
+			slog.Int("status", rec.code()),
 			slog.Int("bytes", rec.bytes),
 			slog.Duration("duration", time.Since(start)),
 			slog.String("remote", r.RemoteAddr),

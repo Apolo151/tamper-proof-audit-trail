@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Apolo151/tamper-proof-audit-trail/internal/audit"
+	"github.com/Apolo151/tamper-proof-audit-trail/internal/telemetry"
 )
 
 // corruptFirstActor rewrites the actor on the first JSONL line of the audit log
@@ -37,7 +38,7 @@ func newTestAPI(t *testing.T) (http.Handler, *audit.Store) {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	h := NewHandler(store, slog.New(slog.NewJSONHandler(io.Discard, nil)), 4096)
+	h := NewHandler(store, slog.New(slog.NewJSONHandler(io.Discard, nil)), 4096, telemetry.New())
 	return h, store
 }
 
@@ -172,7 +173,7 @@ func TestVerifyStrictReturns409(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s2.Close() })
-	h := NewHandler(s2, slog.New(slog.NewJSONHandler(io.Discard, nil)), 4096)
+	h := NewHandler(s2, slog.New(slog.NewJSONHandler(io.Discard, nil)), 4096, telemetry.New())
 
 	rr := do(t, h, "GET", "/api/v1/audit/verify", "")
 	if rr.Code != http.StatusOK {
@@ -191,5 +192,92 @@ func TestHealthAndReady(t *testing.T) {
 	}
 	if rr := do(t, h, "GET", "/readyz", ""); rr.Code != http.StatusOK {
 		t.Errorf("readyz = %d", rr.Code)
+	}
+}
+
+// TestVerifySeesOnDiskTamperingWhileRunning is the case the chain-tampered
+// alert exists for: the file is edited underneath a live server.
+func TestVerifySeesOnDiskTamperingWhileRunning(t *testing.T) {
+	dir := t.TempDir()
+	store, err := audit.Open(dir, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	h := NewHandler(store, slog.New(slog.NewJSONHandler(io.Discard, nil)), 4096, telemetry.New())
+
+	for _, a := range []string{"a", "b"} {
+		if rr := do(t, h, "POST", "/api/v1/audit", `{"actor":"`+a+`","action":"x","resource":"y"}`); rr.Code != http.StatusCreated {
+			t.Fatalf("append: %d %s", rr.Code, rr.Body)
+		}
+	}
+	corruptFirstActor(t, dir)
+
+	rr := do(t, h, "GET", "/api/v1/audit/verify?strict=1", "")
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("strict verify after live tamper = %d, want 409; body=%s", rr.Code, rr.Body)
+	}
+}
+
+func TestRequestMetrics(t *testing.T) {
+	store, err := audit.Open(t.TempDir(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	tel := telemetry.New()
+	h := NewHandler(store, slog.New(slog.NewJSONHandler(io.Discard, nil)), 4096, tel)
+
+	do(t, h, "POST", "/api/v1/audit", `{"actor":"a","action":"x","resource":"y"}`)
+	do(t, h, "POST", "/api/v1/audit", `{"bad json`)
+	do(t, h, "GET", "/no/such/path/12345", "")
+	do(t, h, "DELETE", "/api/v1/audit", "")
+
+	var b strings.Builder
+	if err := tel.Registry.WriteText(&b); err != nil {
+		t.Fatal(err)
+	}
+	body := b.String()
+	for _, want := range []string{
+		`auditd_http_requests_total{route="POST /api/v1/audit",method="POST",code="201"} 1`,
+		`auditd_http_requests_total{route="POST /api/v1/audit",method="POST",code="400"} 1`,
+		// Unknown paths and wrong methods collapse into one bounded label.
+		`auditd_http_requests_total{route="unmatched",method="GET",code="404"} 1`,
+		`auditd_http_requests_total{route="unmatched",method="DELETE",code="405"} 1`,
+		`auditd_append_duration_seconds_count 1`,
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "12345") {
+		t.Errorf("raw path leaked into a label:\n%s", body)
+	}
+}
+
+func TestPanicIsCountedAs500(t *testing.T) {
+	tel := telemetry.New()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /boom", func(http.ResponseWriter, *http.Request) { panic("boom") })
+	h := withMiddleware(mux, slog.New(slog.NewJSONHandler(io.Discard, nil)), tel)
+
+	if rr := do(t, h, "GET", "/boom", ""); rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	var b strings.Builder
+	_ = tel.Registry.WriteText(&b)
+	if want := `auditd_http_requests_total{route="GET /boom",method="GET",code="500"} 1`; !strings.Contains(b.String(), want) {
+		t.Errorf("missing %q in:\n%s", want, b.String())
+	}
+}
+
+func TestStatusRecorderDefaultsTo200(t *testing.T) {
+	rec := &statusRecorder{ResponseWriter: httptest.NewRecorder()}
+	if got := rec.code(); got != http.StatusOK {
+		t.Fatalf("code() with nothing written = %d, want 200", got)
+	}
+	rec.WriteHeader(http.StatusTeapot)
+	if got := rec.code(); got != http.StatusTeapot {
+		t.Fatalf("code() = %d, want 418", got)
 	}
 }

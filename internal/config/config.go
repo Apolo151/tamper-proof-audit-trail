@@ -22,6 +22,8 @@ type Config struct {
 	ShutdownTimeout   time.Duration // grace period for in-flight requests on SIGTERM
 	ReadHeaderTimeout time.Duration // guard against slow-loris (gosec G112)
 	MaxBodyBytes      int64         // request body cap for POST /api/v1/audit
+	MetricsPort       string        // separate TCP port serving GET /metrics
+	VerifyInterval    time.Duration // how often the on-disk chain is re-verified
 }
 
 // Default values, used when the corresponding environment variable is unset.
@@ -32,6 +34,9 @@ const (
 	defaultShutdownTimeout   = 10 * time.Second
 	defaultReadHeaderTimeout = 5 * time.Second
 	defaultMaxBodyBytes      = 64 * 1024
+	defaultMetricsPort       = "9090"
+	defaultVerifyInterval    = time.Minute
+	minVerifyInterval        = time.Second
 )
 
 // Load reads configuration from the environment, applies defaults and validates
@@ -39,6 +44,7 @@ const (
 func Load() (Config, error) {
 	cfg := Config{
 		Port:              getenv("PORT", defaultPort),
+		MetricsPort:       getenv("METRICS_PORT", defaultMetricsPort),
 		DataDir:           filepath.Clean(getenv("DATA_DIR", defaultDataDir)),
 		ShutdownTimeout:   defaultShutdownTimeout,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
@@ -60,6 +66,9 @@ func Load() (Config, error) {
 	if cfg.MaxBodyBytes, err = getenvInt("MAX_BODY_BYTES", defaultMaxBodyBytes); err != nil {
 		return Config{}, err
 	}
+	if cfg.VerifyInterval, err = getenvDuration("VERIFY_INTERVAL", defaultVerifyInterval); err != nil {
+		return Config{}, err
+	}
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -71,8 +80,16 @@ func (c Config) validate() error {
 	if strings.TrimSpace(c.DataDir) == "" || c.DataDir == "." {
 		return fmt.Errorf("config: DATA_DIR must be a non-empty path")
 	}
-	if p, err := strconv.Atoi(c.Port); err != nil || p < 1 || p > 65535 {
-		return fmt.Errorf("config: PORT %q is not a valid port number", c.Port)
+	for _, p := range []struct{ name, val string }{{"PORT", c.Port}, {"METRICS_PORT", c.MetricsPort}} {
+		if n, err := strconv.Atoi(p.val); err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("config: %s %q is not a valid port number", p.name, p.val)
+		}
+	}
+	if c.MetricsPort == c.Port {
+		return fmt.Errorf("config: METRICS_PORT must differ from PORT (%s)", c.Port)
+	}
+	if c.VerifyInterval < minVerifyInterval {
+		return fmt.Errorf("config: VERIFY_INTERVAL must be at least %s", minVerifyInterval)
 	}
 	if c.MaxBodyBytes < 1 {
 		return fmt.Errorf("config: MAX_BODY_BYTES must be positive, got %d", c.MaxBodyBytes)
