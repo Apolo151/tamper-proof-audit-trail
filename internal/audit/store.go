@@ -72,10 +72,30 @@ func (s *Store) replay() error {
 	if _, err := s.f.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("seek audit log: %w", err)
 	}
-	sc := bufio.NewScanner(s.f)
+	recs, err := readRecords(s.f)
+	if err != nil {
+		return err
+	}
+	s.records = recs
+	if n := len(s.records); n > 0 {
+		s.head = &s.records[n-1]
+	}
+	// Re-seek to end so O_APPEND writes continue cleanly.
+	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("seek audit log end: %w", err)
+	}
+	return nil
+}
+
+// readRecords parses a JSON-Lines chain, one Record per non-empty line.
+func readRecords(r io.Reader) ([]Record, error) {
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 
-	var line int
+	var (
+		recs []Record
+		line int
+	)
 	for sc.Scan() {
 		line++
 		raw := sc.Bytes()
@@ -86,21 +106,58 @@ func (s *Store) replay() error {
 		dec.DisallowUnknownFields()
 		var rec Record
 		if err := dec.Decode(&rec); err != nil {
-			return fmt.Errorf("parse audit log line %d: %w", line, err)
+			return nil, fmt.Errorf("parse audit log line %d: %w", line, err)
 		}
-		s.records = append(s.records, rec)
+		recs = append(recs, rec)
 	}
 	if err := sc.Err(); err != nil {
-		return fmt.Errorf("scan audit log: %w", err)
+		return nil, fmt.Errorf("scan audit log: %w", err)
 	}
-	if n := len(s.records); n > 0 {
-		s.head = &s.records[n-1]
+	return recs, nil
+}
+
+// VerifyDisk re-reads the log file and checks two things:
+//
+//  1. the on-disk chain verifies on its own (catches edits, reordering,
+//     deletions in the middle), and
+//  2. it is exactly the chain this process committed - same length, same
+//     hashes. That catches what (1) cannot: a truncated tail, or a chain an
+//     attacker rewrote and re-hashed consistently from some point onward.
+//
+// Verifying only the in-memory copy would miss all on-disk tampering until
+// the next restart, because memory is only ever changed by Append. The read
+// holds the read lock so it never observes a half-written append.
+func (s *Store) VerifyDisk() VerifyResult {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// #nosec G304 -- s.path is built from the cleaned, operator-configured
+	// DATA_DIR and a constant file name (see Open).
+	f, err := os.Open(s.path)
+	if err != nil {
+		return VerifyResult{Intact: false, Reason: ReasonUnreadable}
 	}
-	// Re-seek to end so O_APPEND writes continue cleanly.
-	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
-		return fmt.Errorf("seek audit log end: %w", err)
+	defer f.Close()
+	disk, err := readRecords(f)
+	if err != nil {
+		return VerifyResult{Intact: false, Reason: ReasonUnreadable}
 	}
-	return nil
+
+	if res := Verify(disk); !res.Intact {
+		return res
+	}
+	n := min(len(disk), len(s.records))
+	for i := 0; i < n; i++ {
+		if disk[i].Hash != s.records[i].Hash {
+			seq := disk[i].Seq
+			return VerifyResult{Intact: false, Checked: i, BrokenSeq: &seq, Reason: ReasonDiskDiverged}
+		}
+	}
+	if len(disk) != len(s.records) {
+		seq := uint64(n + 1) // first record present on one side only
+		return VerifyResult{Intact: false, Checked: n, BrokenSeq: &seq, Reason: ReasonDiskDiverged}
+	}
+	return VerifyResult{Intact: true, Checked: len(disk)}
 }
 
 // Append validates nothing (callers pass an already-validated Event), commits
