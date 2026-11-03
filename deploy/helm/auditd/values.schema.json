@@ -3,7 +3,14 @@
   "title": "auditd chart values",
   "type": "object",
   "additionalProperties": false,
-  "required": ["replicaCount", "image", "service", "resources", "networkPolicy"],
+  "required": [
+    "replicaCount",
+    "image",
+    "service",
+    "resources",
+    "networkPolicy",
+    "metrics"
+  ],
   "properties": {
     "global": {
       "type": "object"
@@ -15,32 +22,65 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository"],
+      "required": [
+        "repository"
+      ],
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string" },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
         "digest": {
           "type": "string",
           "pattern": "^(sha256:[a-f0-9]{64})?$"
         },
         "pullPolicy": {
-          "enum": ["", "Always", "IfNotPresent", "Never"]
+          "enum": [
+            "",
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         }
       }
     },
     "logLevel": {
-      "enum": ["debug", "info", "warn", "error"]
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ]
     },
     "service": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "type": { "enum": ["ClusterIP", "NodePort"] },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "type": {
+          "enum": [
+            "ClusterIP",
+            "NodePort"
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
         "nodePort": {
           "oneOf": [
-            { "type": "string", "maxLength": 0 },
-            { "type": "integer", "minimum": 30000, "maximum": 32767 }
+            {
+              "type": "string",
+              "maxLength": 0
+            },
+            {
+              "type": "integer",
+              "minimum": 30000,
+              "maximum": 32767
+            }
           ]
         }
       }
@@ -48,15 +88,24 @@
     "resources": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["requests", "limits"],
+      "required": [
+        "requests",
+        "limits"
+      ],
       "properties": {
         "requests": {
           "type": "object",
-          "required": ["cpu", "memory"]
+          "required": [
+            "cpu",
+            "memory"
+          ]
         },
         "limits": {
           "type": "object",
-          "required": ["cpu", "memory"]
+          "required": [
+            "cpu",
+            "memory"
+          ]
         }
       }
     },
@@ -64,10 +113,57 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
+        "enabled": {
+          "type": "boolean"
+        },
         "ingressFrom": {
           "type": "array",
-          "items": { "type": "object" }
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "chainVerifyInterval": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "not": {
+            "const": 8080
+          }
+        },
+        "scrapeFrom": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)$"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
         }
       }
     }

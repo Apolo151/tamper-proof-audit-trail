@@ -36,6 +36,9 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
           env:
             - name: DATA_DIR
               value: /data
@@ -43,6 +46,10 @@ spec:
               value: "8080"
             - name: LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.metrics.port | quote }}
+            - name: VERIFY_INTERVAL
+              value: {{ .Values.chainVerifyInterval | quote }}
           securityContext:
             {{- include "auditd.containerSecurityContext" . | nindent 12 }}
           resources:
