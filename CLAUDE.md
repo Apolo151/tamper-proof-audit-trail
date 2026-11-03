@@ -17,7 +17,9 @@ Kubernetes manifests, and a shift-left GitHub Actions security pipeline.
 | `internal/audit/` | the hash chain: `event.go` `chain.go` `store.go` `verify.go` |
 | `internal/httpapi/` | HTTP handlers, middleware, server setup |
 | `terraform/` | S3 (Object Lock/WORM) + KMS, Checkov-clean, **validate-only** |
-| `deploy/k8s/` | hardened manifests + `kind-cluster.yaml` |
+| `deploy/helm/auditd/` | hardened Helm chart; `ci/kind-values.yaml` for kind / `ct install` |
+| `deploy/namespace.yaml` | PSS-restricted namespace, applied before `helm install` (not in the chart) |
+| `deploy/kind-cluster.yaml` | local kind cluster config |
 | `.github/workflows/devsecops.yml` | the pipeline |
 
 ## Build / test / run
@@ -56,6 +58,14 @@ Each `make scan-*` target needs its tool on `PATH`
 - Terraform is **validate + Checkov only** - never `apply` (no real AWS account).
 - Keep the Deployment at **`replicas: 1`**: the chain is a single-writer log on
   an `emptyDir`. Multi-replica needs a StatefulSet + RWO PVC or a shared store.
+  `values.schema.json` enforces it (`const: 1`).
+- Helm: security contexts are template helpers, deliberately **not** values. The
+  schema has `additionalProperties: false`, so every new value needs a schema entry.
+- Any chart change needs a `Chart.yaml` `version` bump (`ct lint` fails otherwise).
+  CI never overwrites a published chart version.
+- The helm test pod must pass restricted PSS too, and needs its own egress
+  NetworkPolicy because the chart's default-deny also covers it.
+- Checkov runs on the **rendered** chart (`make helm-template`), not on templates.
 - The hash pre-image hashes the client's **compacted raw metadata bytes**, not a
   re-marshalled map - don't "normalise" metadata through `map[string]any`.
 - Pin every workflow `uses:` to a full commit SHA with a `# vX.Y.Z` comment, and
