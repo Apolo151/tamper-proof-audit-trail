@@ -184,7 +184,7 @@ jobs:
         run: ct lint --config ct.yaml
       - name: build image for the kind smoke test
         run: docker build -t auditd:local .
-      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+      - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
         with:
           cluster_name: chart-testing
       - name: load image + create the restricted namespace
@@ -336,7 +336,7 @@ jobs:
             echo "::error::loaded image $loaded != scanned image $SCANNED_ID"
             exit 1
           fi
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -359,7 +359,7 @@ jobs:
           echo "image=$repo" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "pushed $repo@$digest" >> "$GITHUB_STEP_SUMMARY"
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       # Always sign / attest the digest, never a tag: tags are mutable pointers.
       - name: cosign sign (keyless)
         env:
@@ -453,8 +453,8 @@ jobs:
       CERT_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/devsecops.yml@refs/heads/main
       CERT_ISSUER: https://token.actions.githubusercontent.com
     steps:
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
